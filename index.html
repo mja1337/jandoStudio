@@ -4896,8 +4896,10 @@
 
     const posRow = document.createElement('div');
     posRow.className = 'field-row four';
+    // A full process flow legitimately runs to tens of thousands of pixels wide; 10000 was reachable in
+    // practice, so a swimlane could not be widened past it by typing a value.
     const dimensions = [
-      ['X', 'x', -10000, 10000], ['Y', 'y', -10000, 10000], ['W', 'w', 20, 10000], ['H', 'h', 20, 10000]
+      ['X', 'x', -200000, 200000], ['Y', 'y', -200000, 200000], ['W', 'w', 20, 200000], ['H', 'h', 20, 200000]
     ];
     dimensions.forEach(([label, key, min, max]) => {
       posRow.appendChild(field(label, numberInput(Math.round(cell[key]), (value) => {
@@ -13377,7 +13379,22 @@
     else{const required=Math.max(...children.map(cell=>cell.y+cell.h+margin));if(required>pool.y+pool.h+.5){pool.h=Math.max(120,ceilGrid(required-pool.y));changed=true;}}
     if(v2Alpha29EnsurePageContains(pool))changed=true;return changed;
   }
-  function v2Alpha29ScheduleExtentAudit(){if(v2Alpha29ExtentFrame)return;v2Alpha29ExtentFrame=requestAnimationFrame(()=>{v2Alpha29ExtentFrame=0;let changed=false;state.cells.filter(cell=>isVertex(cell)&&cell.shape==='swimlane').forEach(pool=>{if(v2Alpha29EnsurePrimaryExtent(pool))changed=true;});if(changed){markDirty();render();showToast('Swimlane extended to contain its shapes.',1500);}});}
+  /* The audit that grows a swimlane around its shapes was gated on a requestAnimationFrame that also cleared
+     the gate. A background window never fires rAF, so the gate could stay shut and the swimlane would stop
+     growing for the rest of the session. Race a timer against the frame and clear the gate either way. */
+  function v2Alpha29RunExtentAudit(){
+    v2Alpha29ExtentFrame=0;
+    let changed=false;
+    state.cells.filter(cell=>isVertex(cell)&&cell.shape==='swimlane').forEach(pool=>{if(v2Alpha29EnsurePrimaryExtent(pool))changed=true;});
+    if(changed){markDirty();render();showToast('Swimlane extended to contain its shapes.',1500);}
+  }
+  function v2Alpha29ScheduleExtentAudit(){
+    if(v2Alpha29ExtentFrame)return;
+    let settled=false;
+    const run=()=>{if(settled)return;settled=true;v2Alpha29RunExtentAudit();};
+    v2Alpha29ExtentFrame=requestAnimationFrame(run)||1;
+    setTimeout(run,140);
+  }
 
   function v2Alpha29ShowPlacementPrompt(pending){
     v2Alpha29PendingPlacement=pending;const modal=v2Alpha29EnsureModal(),pool=getCell(pending.poolId),cell=getCell(pending.cellId);if(!pool||!cell)return v2Alpha29ResolvePlacement('cancel');
@@ -17203,11 +17220,344 @@
     version:()=>window.localDiagramEditor.version
   };
 
+  /* ================= JandoStudio v2.1.0-alpha.12 compact layering + tidy arranged connectors ================= */
+  const V21_ALPHA12_VERSION='2.1.0-alpha.12';
+
+  /* Layering. The previous ranking used a plain Kahn sweep, so any node inside a rework loop, or with a
+     join it could not clear, never left the queue. Every one of those "leftovers" was then given its own
+     unique column, which turned a six-step process into forty-plus columns and made every connector long.
+     Break cycles on a DFS first, then layer the remaining DAG by longest path so ranks reflect real depth. */
+  v2Alpha32GraphRanks=function(vertices){
+    const ids=new Set(vertices.map(cell=>cell.id)),axis=cell=>cell.x+cell.w/2;
+    const order=[...vertices].sort((a,b)=>axis(a)-axis(b)||String(a.id).localeCompare(String(b.id)));
+    const out=new Map(vertices.map(cell=>[cell.id,[]]));
+    const edges=state.cells.filter(edge=>isEdge(edge)&&ids.has(edge.source)&&ids.has(edge.target)&&edge.source!==edge.target);
+    edges.forEach(edge=>out.get(edge.source)?.push(edge.target));
+    const mark=new Map(vertices.map(cell=>[cell.id,0])),back=new Set();
+    for(const root of order){
+      if(mark.get(root.id)!==0)continue;
+      mark.set(root.id,1);const stack=[{id:root.id,index:0}];
+      while(stack.length){
+        const top=stack[stack.length-1],children=out.get(top.id)||[];
+        if(top.index>=children.length){mark.set(top.id,2);stack.pop();continue;}
+        const next=children[top.index++],seen=mark.get(next);
+        if(seen===1){back.add(`${top.id}>${next}`);continue;}
+        if(seen===2)continue;
+        mark.set(next,1);stack.push({id:next,index:0});
+      }
+    }
+    const forward=new Map(vertices.map(cell=>[cell.id,[]])),indegree=new Map(vertices.map(cell=>[cell.id,0]));
+    for(const edge of edges){
+      if(back.has(`${edge.source}>${edge.target}`))continue;
+      forward.get(edge.source).push(edge.target);indegree.set(edge.target,indegree.get(edge.target)+1);
+    }
+    const rank=new Map(vertices.map(cell=>[cell.id,0])),queue=order.filter(cell=>indegree.get(cell.id)===0).map(cell=>cell.id);
+    let cursor=0;
+    while(cursor<queue.length){
+      const id=queue[cursor++];
+      for(const target of forward.get(id)||[]){
+        rank.set(target,Math.max(rank.get(target)||0,(rank.get(id)||0)+1));
+        if(indegree.set(target,indegree.get(target)-1).get(target)===0)queue.push(target);
+      }
+    }
+    return rank;
+  };
+
+  /* Path tidying. The A* corridor search returns a node per grid line it touches, so a long route can arrive
+     with dozens of tiny alternating steps. Collapse any run of points whose endpoints can be rejoined by a
+     clear straight or single-elbow link, which keeps the corridor but removes the stair-stepping. */
+  function v21Alpha12Clear(a,b,obstacles){return v2Alpha44SegmentClear(a,b,obstacles);}
+  function v21Alpha12LinkPoints(a,b,obstacles){
+    if(Math.abs(a.x-b.x)<.5||Math.abs(a.y-b.y)<.5)return v21Alpha12Clear(a,b,obstacles)?[]:null;
+    const elbows=[{x:b.x,y:a.y},{x:a.x,y:b.y}];
+    for(const corner of elbows)if(v21Alpha12Clear(a,corner,obstacles)&&v21Alpha12Clear(corner,b,obstacles))return[corner];
+    return null;
+  }
+  /* The first and last segments are the stubs leaving each port and must survive: collapsing them lets a
+     connector turn the moment it leaves a shape, so it runs along that shape's own edge and every other
+     connector on the same port follows the identical line. Only the interior is collapsed. */
+  function v21Alpha12TightenPath(points,obstacles){
+    let path=v2Alpha44Simplify(points);
+    if(path.length<5)return path;
+    for(let guard=0;guard<8;guard++){
+      let improved=false;
+      for(let i=1;i<path.length-3&&!improved;i++){
+        for(let j=path.length-2;j>i+1;j--){
+          const link=v21Alpha12LinkPoints(path[i],path[j],obstacles);
+          if(!link)continue;
+          if(link.length+2>=j-i+1)continue;
+          path=v2Alpha44Simplify([...path.slice(0,i+1),...link,...path.slice(j)]);
+          improved=true;break;
+        }
+      }
+      if(!improved)break;
+    }
+    return path;
+  }
+
+  /* Arranged connectors. Alpha 2.17 wrote two snapped waypoints per cross-lane connector. Because
+     routePoints skips obstacle avoidance whenever a connector carries waypoints, that quietly disabled the
+     Alpha 2.26 router, so arranged routes drove straight through shapes. The snapped waypoint also never
+     matched the unsnapped port centre, leaving a small diagonal kink at each end. Route each connector with
+     the obstacle-aware search instead, anchored on the exact port coordinates. */
+  /* Column alignment. Placement snaps cell.x after subtracting the shape's own half width, so two shapes of
+     different widths sharing a column end up with centres a few pixels apart. Every connector between them
+     then carries a small dog-leg. Snap the shared column centre once and hang each shape off that instead. */
+  function v21Alpha12AlignColumns(pool){
+    const horizontal=pool.orientation!=='vertical';
+    const children=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id&&!isPositionLocked(cell));
+    if(children.length<2)return;
+    const centreOf=cell=>horizontal?cell.x+cell.w/2:cell.y+cell.h/2,tolerance=Math.max(12,state.gridSize||10),clusters=[];
+    for(const cell of [...children].sort((a,b)=>centreOf(a)-centreOf(b))){
+      const value=centreOf(cell),last=clusters[clusters.length-1];
+      if(last&&Math.abs(value-last.centre)<=tolerance){last.items.push(cell);last.centre=last.items.reduce((sum,item)=>sum+centreOf(item),0)/last.items.length;}
+      else clusters.push({centre:value,items:[cell]});
+    }
+    for(const cluster of clusters){
+      const centre=snapValue(cluster.centre);
+      for(const cell of cluster.items){if(horizontal)cell.x=centre-cell.w/2;else cell.y=centre-cell.h/2;}
+    }
+  }
+  function v21Alpha12LaneIndex(metrics,laneId){return metrics.findIndex(metric=>metric.id===laneId);}
+  function v21Alpha12ChoosePorts(source,target,pool,metrics){
+    const horizontal=pool.orientation!=='vertical',s=v21Alpha12LaneIndex(metrics,source.laneId),t=v21Alpha12LaneIndex(metrics,target.laneId);
+    const sx=source.x+source.w/2,sy=source.y+source.h/2,tx=target.x+target.w/2,ty=target.y+target.h/2;
+    if(s>=0&&t>=0&&s!==t)return horizontal?(ty>=sy?['s','n']:['n','s']):(tx>=sx?['e','w']:['w','e']);
+    return horizontal?(tx>=sx?['e','w']:['w','e']):(ty>=sy?['s','n']:['n','s']);
+  }
+  /* Port fanning. Four connectors leaving the same side of a shape all start at that side's midpoint and run
+     down the identical line, which is the single biggest source of connectors drawn on top of each other.
+     Spread the attachment points along the side instead. draw.io stores these as fractional exitX/exitY, so
+     this survives export, and unlike inserting a detour it costs no extra bends. */
+  /* Collision testing only recognised segments aligned to within 0.01px and returned false for everything
+     else, so a run that missed horizontal by a third of a pixel was never tested against any shape at all.
+     Widen the alignment tolerance and clip genuine diagonals properly rather than ignoring them. */
+  const v21Alpha12BaseSegmentHitsRect=v2Alpha44SegmentHitsRect;
+  v2Alpha44SegmentHitsRect=function(a,b,r){
+    const dx=b.x-a.x,dy=b.y-a.y,flatX=Math.abs(dx)<=1,flatY=Math.abs(dy)<=1;
+    if(flatX&&flatY)return false;
+    if(flatY){
+      const y=(a.y+b.y)/2;
+      if(y<=r.y+.5||y>=r.y+r.h-.5)return false;
+      return Math.max(a.x,b.x)>r.x+.5&&Math.min(a.x,b.x)<r.x+r.w-.5;
+    }
+    if(flatX){
+      const x=(a.x+b.x)/2;
+      if(x<=r.x+.5||x>=r.x+r.w-.5)return false;
+      return Math.max(a.y,b.y)>r.y+.5&&Math.min(a.y,b.y)<r.y+r.h-.5;
+    }
+    let t0=0,t1=1;
+    const edges=[[-dx,a.x-(r.x+.5)],[dx,(r.x+r.w-.5)-a.x],[-dy,a.y-(r.y+.5)],[dy,(r.y+r.h-.5)-a.y]];
+    for(const [p,q] of edges){
+      if(Math.abs(p)<1e-9){if(q<0)return false;continue;}
+      const t=q/p;
+      if(p<0){if(t>t1)return false;if(t>t0)t0=t;}
+      else{if(t<t0)return false;if(t<t1)t1=t;}
+    }
+    return t0<t1;
+  };
+  /* Keep fanned anchors on whole pixels: a fractional offset leaves the run a hair off axis, which is what
+     slipped past the collision test above. */
+  function v21Alpha12PortPoint(cell,port,bias){
+    const point=v2Alpha44PortPoint(cell,port);
+    if(!bias)return point;
+    if(port==='n'||port==='s')return{x:Math.round(point.x+bias*cell.w),y:point.y};
+    if(port==='e'||port==='w')return{x:point.x,y:Math.round(point.y+bias*cell.h)};
+    return point;
+  }
+  function v21Alpha12EdgePort(edge,end){
+    const bias=edge?.portBias?.[end]||0,cell=getCell(end==='source'?edge.source:edge.target);
+    const port=normalizePortName(end==='source'?edge.sourcePort:edge.targetPort);
+    if(!cell||port==='auto')return null;
+    return v21Alpha12PortPoint(cell,port,bias);
+  }
+  function v21Alpha12FanPorts(edges){
+    const groups=new Map();
+    for(const edge of edges){
+      edge.portBias={source:0,target:0};
+      for(const end of ['source','target']){
+        const port=normalizePortName(end==='source'?edge.sourcePort:edge.targetPort);
+        const cellId=end==='source'?edge.source:edge.target;
+        if(!cellId||port==='auto')continue;
+        const key=`${cellId}|${port}`;
+        if(!groups.has(key))groups.set(key,[]);
+        groups.get(key).push({edge,end});
+      }
+    }
+    for(const [key,members] of groups){
+      if(members.length<2)continue;
+      const separator=key.lastIndexOf('|'),cell=getCell(key.slice(0,separator)),port=key.slice(separator+1);
+      if(!cell)continue;
+      const alongX=port==='n'||port==='s',side=alongX?cell.w:cell.h;
+      /* Order by where the far end sits, so fanned connectors do not cross each other at the shape. */
+      const far=member=>{
+        const other=getCell(member.end==='source'?member.edge.target:member.edge.source);
+        if(!other)return 0;
+        return alongX?other.x+other.w/2:other.y+other.h/2;
+      };
+      members.sort((a,b)=>far(a)-far(b));
+      /* Fan wide enough that the separate exits are still distinguishable when the whole chart is on screen. */
+      const spacing=Math.min(34,Math.max(18,(side-20)/members.length));
+      members.forEach((member,index)=>{
+        const offset=Math.round((index-(members.length-1)/2)*spacing);
+        member.edge.portBias[member.end]=clamp(offset/Math.max(1,side),-0.38,0.38);
+      });
+    }
+  }
+  function v21Alpha12AssignPorts(edge,pool,metrics){
+    const source=getCell(edge.source),target=getCell(edge.target);
+    if(!source||!target)return false;
+    const [sourcePort,targetPort]=v21Alpha12ChoosePorts(source,target,pool,metrics);
+    edge.route='orthogonal';edge.sourcePort=sourcePort;edge.targetPort=targetPort;edge.waypoints=[];
+    edge.portBias={source:0,target:0};v2Alpha46RouteCache.delete(edge);
+    return true;
+  }
+  function v21Alpha12RouteArranged(edge,pool,metrics){
+    const source=getCell(edge.source),target=getCell(edge.target);
+    if(!source||!target)return;
+    const sourcePort=normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort);
+    edge.waypoints=[];v2Alpha46RouteCache.delete(edge);
+    const start=v21Alpha12EdgePort(edge,'source')||v2Alpha44PortPoint(source,sourcePort);
+    const end=v21Alpha12EdgePort(edge,'target')||v2Alpha44PortPoint(target,targetPort);
+    const routed=v2Alpha46RouteBetween(source,target,start,end,sourcePort,targetPort,edge.id);
+    if(!routed?.path?.length)return;
+    const obstacles=v2Alpha46VisibleRoutingCells(source,target).map(cell=>v2Alpha44ExpandedRect(cell,12));
+    const path=v21Alpha12TightenPath(routed.path,obstacles);
+    if(path.length<2||v2Alpha46PathHitsObstacles(path,obstacles))return;
+    edge.waypoints=path.slice(1,-1).map(point=>({x:point.x,y:point.y}));
+  }
+  /* Corridor separation. v2Alpha44SegmentCross only tests a horizontal span against a vertical one, so two
+     routes running along the very same line cost the search nothing and stack invisibly on top of each other.
+     The routing grid also offers one candidate line per obstacle side, so parallel routes have nowhere else
+     to go. Rather than enlarging the grid, which multiplies an already slow search, pull overlapping runs
+     apart afterwards: shifting an interior segment keeps the path orthogonal, because only the two adjacent
+     perpendicular segments change length, and the port anchors are never touched. */
+  function v21Alpha12CorridorSlot(slot,spacing){
+    if(!slot)return 0;
+    return (slot%2?1:-1)*Math.ceil(slot/2)*spacing;
+  }
+  function v21Alpha12SeparateCorridors(edges){
+    /* Clustering at 2px meant two connectors running 8px apart counted as separate corridors and were never
+       pulled apart - and 8px on a 7000px-wide chart is barely a pixel on screen, so they read as one line.
+       Gather anything sharing a corridor within ~24px, and separate to a gap that survives being zoomed out. */
+    const spacing=Math.max(20,(state.gridSize||10)*2),tolerance=24,minOverlap=20,entries=[];
+    for(const edge of edges){
+      const source=getCell(edge.source),target=getCell(edge.target);
+      if(!source||!target||!edge.waypoints?.length)continue;
+      const start=v21Alpha12EdgePort(edge,'source')||v2Alpha44PortPoint(source,edge.sourcePort);
+      const end=v21Alpha12EdgePort(edge,'target')||v2Alpha44PortPoint(target,edge.targetPort);
+      entries.push({edge,source,target,points:[start,
+        ...edge.waypoints.map(point=>({x:point.x,y:point.y})),end]});
+    }
+    const obstacleCache=new Map();
+    const obstaclesFor=entry=>{
+      if(!obstacleCache.has(entry.edge.id))
+        obstacleCache.set(entry.edge.id,v2Alpha46VisibleRoutingCells(entry.source,entry.target).map(cell=>v2Alpha44ExpandedRect(cell,10)));
+      return obstacleCache.get(entry.edge.id);
+    };
+    const segments=[];
+    for(const entry of entries){
+      const points=entry.points;
+      for(let i=1;i+1<points.length-1;i++){
+        const a=points[i],b=points[i+1],horizontal=Math.abs(a.y-b.y)<.5,vertical=Math.abs(a.x-b.x)<.5;
+        if(horizontal===vertical)continue;
+        segments.push({entry,index:i,horizontal,coord:horizontal?a.y:a.x,
+          lo:horizontal?Math.min(a.x,b.x):Math.min(a.y,b.y),hi:horizontal?Math.max(a.x,b.x):Math.max(a.y,b.y)});
+      }
+    }
+    for(const horizontal of [true,false]){
+      const axis=segments.filter(segment=>segment.horizontal===horizontal).sort((a,b)=>a.coord-b.coord);
+      let cluster=[];
+      const flush=()=>{
+        if(cluster.length>1){
+          const slots=[];
+          for(const segment of [...cluster].sort((a,b)=>a.lo-b.lo)){
+            let slot=0;
+            while((slots[slot]||[]).some(taken=>Math.min(taken.hi,segment.hi)-Math.max(taken.lo,segment.lo)>minOverlap))slot++;
+            (slots[slot]=slots[slot]||[]).push({lo:segment.lo,hi:segment.hi});
+            segment.slot=slot;
+          }
+          for(const segment of cluster){
+            const base=v21Alpha12CorridorSlot(segment.slot,spacing);
+            if(!base)continue;
+            /* A single fixed shift often lands on a shape and is then thrown away, leaving the routes
+               stacked. Walk outwards, and to either side, until the moved run and the two segments it
+               drags with it are all clear. */
+            const points=segment.entry.points,obstacles=obstaclesFor(segment.entry);
+            for(const multiplier of [1,-1,1.6,-1.6,2.4,-2.4,3.4,-3.4]){
+              const delta=Math.round(base*multiplier);
+              if(!delta)continue;
+              const trial=points.map(point=>({x:point.x,y:point.y}));
+              if(segment.horizontal){trial[segment.index].y+=delta;trial[segment.index+1].y+=delta;}
+              else{trial[segment.index].x+=delta;trial[segment.index+1].x+=delta;}
+              const from=Math.max(0,segment.index-1),to=Math.min(trial.length-1,segment.index+2);
+              let clear=true;
+              for(let k=from;k<to&&clear;k++)if(!v2Alpha44SegmentClear(trial[k],trial[k+1],obstacles))clear=false;
+              if(!clear)continue;
+              points[segment.index]=trial[segment.index];points[segment.index+1]=trial[segment.index+1];
+              break;
+            }
+          }
+        }
+        cluster=[];
+      };
+      for(const segment of axis){
+        if(cluster.length&&Math.abs(segment.coord-cluster[0].coord)>tolerance)flush();
+        cluster.push(segment);
+      }
+      flush();
+    }
+    let moved=0;
+    for(const entry of entries){
+      const obstacles=obstaclesFor(entry);
+      const tidy=v2Alpha44Simplify(entry.points);
+      if(tidy.length<2||v2Alpha46PathHitsObstacles(tidy,obstacles))continue;
+      entry.edge.waypoints=tidy.slice(1,-1).map(point=>({x:point.x,y:point.y}));
+      v2Alpha46RouteCache.delete(entry.edge);moved++;
+    }
+    return moved;
+  }
+  /* Routing is a separate step so it can be run twice. On the first pass a connector can only guess where
+     the ones after it will end up, so it cannot avoid them; a second pass, with every route already on the
+     board, is what actually reduces crossings. Ports and fanned anchors are kept on the second pass and only
+     the connector being re-routed has its own bends cleared, so it sees the others as real obstacles. */
+  function v21Alpha12RoutePool(pool,options={}){
+    const reassign=options.reassign!==false;
+    const ids=new Set(state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id).map(cell=>cell.id));
+    const metrics=laneMetrics(pool);
+    const internal=state.cells.filter(edge=>isEdge(edge)&&ids.has(edge.source)&&ids.has(edge.target)&&!isFullyLocked(edge));
+    let routable;
+    if(reassign){
+      const previous=v21Alpha18Context;
+      v21Alpha18Context=typeof v21Alpha18BuildContext==='function'?v21Alpha18BuildContext():null;
+      try{routable=internal.filter(edge=>v21Alpha12AssignPorts(edge,pool,metrics));}
+      finally{v21Alpha18Context=previous;}
+      v21Alpha12FanPorts(routable);
+    }else routable=internal.filter(edge=>getCell(edge.source)&&getCell(edge.target));
+    routable.forEach(edge=>v21Alpha12RouteArranged(edge,pool,metrics));
+    v21Alpha12SeparateCorridors(routable);
+    return routable;
+  }
+  let v21Alpha15DeferRouting=false;
+  const v21Alpha12BaseAutoLayoutPool=v2Alpha32AutoLayoutPool;
+  v2Alpha32AutoLayoutPool=function(pool){
+    const result=v21Alpha12BaseAutoLayoutPool(pool);
+    if(!result?.changed)return result;
+    v21Alpha12AlignColumns(pool);
+    if(!v21Alpha15DeferRouting)v21Alpha12RoutePool(pool);
+    return result;
+  };
+
+  window.localDiagramEditor.version=V21_ALPHA12_VERSION;document.title=`JandoStudio v${V21_ALPHA12_VERSION}`;
+  const v21a12Brand=document.querySelector('.brand');if(v21a12Brand)v21a12Brand.title=`JandoStudio v${V21_ALPHA12_VERSION} - offline productivity editor`;
+  const v21a12Version=document.querySelector('.brand-copy span');if(v21a12Version)v21a12Version.textContent=`offline productivity studio - v${V21_ALPHA12_VERSION}`;
+  const v21a12Help=$('v2a44Help');if(v21a12Help)v21a12Help.innerHTML+='<p><b>v2.1 Alpha 12:</b> Auto layout now measures real process depth, so loops and rework paths no longer push every shape into its own column. Arranged connectors are routed around shapes rather than through them, anchored exactly on their ports, and long corridor routes are collapsed to the fewest bends that stay clear.</p>';
+
   render();
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.11';
+  const JANDO_VERSION='2.1.0-alpha.18';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17287,10 +17637,589 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha11';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha18';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
+
+  /* ================= JandoStudio busy indicator for long synchronous work ================= */
+  /* Opening a file runs seven stacked import layers and arranging routes every connector, both of which
+     block the main thread for seconds. The spinner is animated purely with transform and opacity so the
+     compositor keeps it moving while JavaScript is busy; a plain GIF or JS-driven spinner would freeze. */
+  const jandoBusyStyle=document.createElement('style');jandoBusyStyle.id='jando-busy-style';jandoBusyStyle.textContent=`
+    #jandoBusy{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;
+      background:rgba(15,23,42,.34);-webkit-backdrop-filter:blur(1.5px);backdrop-filter:blur(1.5px)}
+    #jandoBusy[hidden]{display:none!important}
+    #jandoBusy .jando-busy-card{display:flex;align-items:center;gap:13px;min-width:232px;max-width:70vw;
+      padding:15px 19px;border:1px solid var(--line,#d8dde6);border-radius:8px;background:var(--panel,#fff);
+      box-shadow:0 10px 34px rgba(15,23,42,.22)}
+    #jandoBusy .jando-busy-ring{flex:0 0 auto;width:24px;height:24px;border-radius:50%;
+      border:3px solid rgba(36,107,253,.22);border-top-color:var(--accent,#246bfd);
+      will-change:transform;animation:jandoBusySpin .8s linear infinite}
+    #jandoBusy .jando-busy-copy{min-width:0}
+    #jandoBusy strong{display:block;font-size:12px;color:var(--text,#1f2937)}
+    #jandoBusy span{display:block;margin-top:2px;font-size:10.5px;line-height:1.45;color:var(--muted,#667085);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    @keyframes jandoBusySpin{to{transform:rotate(360deg)}}
+    @media (prefers-reduced-motion:reduce){#jandoBusy .jando-busy-ring{animation-duration:2.4s}}
+    html[data-jandostudio-theme="dark"] #jandoBusy .jando-busy-card{background:#18222f;border-color:#3b485b}
+    html[data-jandostudio-theme="dark"] #jandoBusy strong{color:#e7edf6}
+    html[data-jandostudio-theme="dark"] #jandoBusy span{color:#aebbd0}
+  `;document.head.appendChild(jandoBusyStyle);
+
+  let jandoBusyDepth=0;
+  function jandoBusyElement(){
+    let node=$('jandoBusy');
+    if(!node){
+      node=document.createElement('div');node.id='jandoBusy';node.hidden=true;
+      node.setAttribute('role','status');node.setAttribute('aria-live','polite');
+      node.innerHTML='<div class="jando-busy-card"><div class="jando-busy-ring"></div><div class="jando-busy-copy"><strong></strong><span></span></div></div>';
+      document.body.appendChild(node);
+    }
+    return node;
+  }
+  function jandoBusyShow(title,detail){
+    const node=jandoBusyElement();
+    node.querySelector('strong').textContent=title;
+    node.querySelector('span').textContent=detail||'';
+    jandoBusyDepth++;node.hidden=false;
+  }
+  function jandoBusyHide(){
+    jandoBusyDepth=Math.max(0,jandoBusyDepth-1);
+    if(!jandoBusyDepth)jandoBusyElement().hidden=true;
+  }
+  /* Two frames plus a task: the first frame commits the style change, the second guarantees it has been
+     painted before the blocking work starts on the next task. Background tabs never fire rAF at all, so a
+     timer races the frames — without it, opening a file in a hidden tab would wait for a paint forever. */
+  const jandoNextPaint=()=>new Promise(resolve=>{
+    let settled=false;const finish=()=>{if(settled)return;settled=true;resolve();};
+    requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(finish,0)));
+    setTimeout(finish,120);
+  });
+  async function jandoWithBusy(title,detail,work){
+    jandoBusyShow(title,detail);
+    try{await jandoNextPaint();return await work();}
+    finally{jandoBusyHide();}
+  }
+  window.JandoStudio.busy={show:jandoBusyShow,hide:jandoBusyHide,run:jandoWithBusy};
+  window.JandoStudio.debugCrossWeight=value=>{
+    if(value!==undefined)V21_ALPHA16_CROSS_WEIGHT=value;
+    return V21_ALPHA16_CROSS_WEIGHT;
+  };
+  window.JandoStudio.debugRoutePool=(reassign=false)=>{
+    const pool=state.cells.find(cell=>isVertex(cell)&&cell.shape==='swimlane');
+    if(!pool)return 0;
+    const routed=v21Alpha12RoutePool(pool,{reassign}).length;render();return routed;
+  };
+  window.JandoStudio.debugRoute=id=>{
+    const edge=getCell(id);if(!edge||!isEdge(edge))return null;
+    const source=getCell(edge.source),target=getCell(edge.target);if(!source||!target)return null;
+    const obstacles=v2Alpha46VisibleRoutingCells(source,target).map(cell=>v2Alpha44ExpandedRect(cell,12));
+    const path=routePoints(edge);
+    return{obstacles:obstacles.length,obstacleIds:obstacles.map(o=>o.id),
+      hits:v2Alpha46PathHitsObstacles(path,obstacles),
+      path:path.map(p=>[p.x,p.y]),waypoints:deepClone(edge.waypoints),bias:deepClone(edge.portBias)};
+  };
+
+  /* Fanned attachment points must be honoured everywhere a connector is drawn or hit-tested, and must
+     survive a save. draw.io reads them as fractional exitX/exitY on the connector style. */
+  const jandoBaseEdgeEndpoints=edgeEndpoints;
+  edgeEndpoints=function(edge){
+    const endpoints=jandoBaseEdgeEndpoints(edge);
+    if(!endpoints||!edge?.portBias)return endpoints;
+    const sourcePort=normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort);
+    const start=sourcePort==='auto'?endpoints.start:v21Alpha12PortPoint(endpoints.source,sourcePort,edge.portBias.source);
+    const end=targetPort==='auto'?endpoints.end:v21Alpha12PortPoint(endpoints.target,targetPort,edge.portBias.target);
+    return{...endpoints,start,end};
+  };
+  const jandoPortBiasBaseBuildXml=buildDrawioXml;
+  buildDrawioXml=function(){
+    const xml=jandoPortBiasBaseBuildXml(),biased=new Map();
+    for(const page of [...(state.pages||[]),{cells:state.cells}])
+      for(const cell of page.cells||[])
+        if(isEdge(cell)&&cell.portBias&&(cell.portBias.source||cell.portBias.target))biased.set(cell.id,cell);
+    if(!biased.size)return xml;
+    const doc=new DOMParser().parseFromString(xml,'application/xml');
+    if(doc.querySelector('parsererror'))return xml;
+    let changed=false;
+    for(const node of doc.querySelectorAll('mxCell[edge="1"]')){
+      const edge=biased.get(node.getAttribute('id'));
+      let style=node.getAttribute('style')||'';
+      if(!edge||!style)continue;
+      const setProp=(key,value)=>{
+        const pattern=new RegExp(`(^|;)${key}=[^;]*`);
+        style=pattern.test(style)?style.replace(pattern,`$1${key}=${value}`)
+          :`${style}${style.endsWith(';')?'':';'}${key}=${value}`;
+      };
+      const sourcePort=normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort);
+      if(sourcePort!=='auto'&&edge.portBias.source){
+        setProp(sourcePort==='n'||sourcePort==='s'?'exitX':'exitY',(0.5+edge.portBias.source).toFixed(4));changed=true;
+      }
+      if(targetPort!=='auto'&&edge.portBias.target){
+        setProp(targetPort==='n'||targetPort==='s'?'entryX':'entryY',(0.5+edge.portBias.target).toFixed(4));changed=true;
+      }
+      node.setAttribute('style',style);
+    }
+    return changed?new XMLSerializer().serializeToString(doc):xml;
+  };
+
+  /* ================= Labels that fit, and that survive export ================= */
+  /* Connector labels were drawn into a fixed 110x24 box, so anything longer than roughly thirty characters
+     was replaced with an ellipsis: a seventy-five character note rendered as "Consumables...". The box also
+     carried no fill of its own and relied on a stylesheet class, so wherever that CSS is not carried along
+     the rect falls back to the SVG default of solid black. Size the box to the text and paint it explicitly. */
+  /* Measure with the integer width the renderer will actually use, and round the height up with a little
+     slack: appendWrappedText derives its line budget with Math.floor, so a height that is exact to the
+     pixel still loses the last line. */
+  function v21Alpha14FitBox(text,options={}){
+    const fontSize=Number(options.fontSize||14);
+    const padding=Math.max(0,Number(options.padding??6));
+    const lineHeight=fontSize*Number(options.lineSpacing||1.22);
+    const maxWidth=Number(options.maxWidth)||280,maxLines=Number(options.maxLines)||4;
+    let width=Math.round(Math.max(Number(options.width)||0,Number(options.minWidth)||140));
+    const measure=value=>wrapText(text,Math.max(12,value-padding*2),fontSize);
+    let lines=measure(width);
+    while(lines.length>maxLines&&width<maxWidth){
+      width=Math.min(maxWidth,Math.round(width+40));
+      lines=measure(width);
+    }
+    return{w:width,h:Math.ceil(lines.length*lineHeight+padding*2)+2,lines:lines.length};
+  }
+  function v21Alpha14LabelBox(text,fontSize){
+    const charWidth=Math.max(4.8,fontSize*0.56);
+    const natural=Math.round(String(text||'').length*charWidth+12);
+    return v21Alpha14FitBox(text,{fontSize,padding:6,width:Math.min(260,natural),
+      minWidth:64,maxWidth:260,maxLines:3});
+  }
+  const v21Alpha14BaseRenderEdge=renderEdge;
+  renderEdge=function(edge,targetLayer=diagramLayer){
+    const group=v21Alpha14BaseRenderEdge(edge,targetLayer);
+    const labelGroup=group?.querySelector?.('.edge-label');
+    if(!labelGroup||!edge?.label)return group;
+    const rect=labelGroup.querySelector('.edge-label-hit');
+    if(!rect)return group;
+    const centre={x:Number(rect.getAttribute('x'))+Number(rect.getAttribute('width'))/2,
+      y:Number(rect.getAttribute('y'))+Number(rect.getAttribute('height'))/2};
+    const fontSize=Number(edge.fontSize||12),box=v21Alpha14LabelBox(edge.label,fontSize);
+    const x=centre.x-box.w/2,y=centre.y-box.h/2;
+    while(labelGroup.firstChild)labelGroup.removeChild(labelGroup.firstChild);
+    labelGroup.appendChild(sEl('rect',{x,y,width:box.w,height:box.h,rx:4,class:'edge-label-hit',
+      fill:'#ffffff',stroke:'#d0d5dd','stroke-width':0.8}));
+    appendWrappedText(labelGroup,edge.label,x,y,box.w,box.h,
+      {fontSize,color:edge.fontColor||'#1f2937',padding:6});
+    return group;
+  };
+
+  /* Shapes keep whatever size the consultant drew, which is rarely enough for the note inside: the longest
+     label on this document is 111 characters in a 200x80 box and loses half its text. Grow a shape until its
+     own label fits, widening a little before it gets very tall. Shapes are never shrunk. */
+  /* Several shapes give their label only part of the box - a header strip, a folded corner, the body of a
+     person glyph - so the space the text really gets is smaller than the shape. Allow for that. */
+  const V21_ALPHA14_PLAIN_SHAPES=new Set(['rect','rounded','ellipse','diamond','square','circle','process','terminator','']);
+  function v21Alpha14FitShapesToText(pool){
+    let grown=0;
+    for(const cell of state.cells){
+      if(!isVertex(cell)||cell.shape==='swimlane'||cell.containerId!==pool.id)continue;
+      if(isFullyLocked(cell)||!cell.label)continue;
+      const box=v21Alpha14FitBox(cell.label,{
+        fontSize:Number(cell.fontSize||14),padding:cell.textPadding,lineSpacing:cell.lineSpacing,
+        width:cell.w,minWidth:140,maxWidth:280,maxLines:4});
+      const needed=cell.shape==='person'?Math.ceil(box.h/0.42)
+        :box.h+(V21_ALPHA14_PLAIN_SHAPES.has(cell.shape||'')?0:26);
+      const width=Math.max(cell.w,box.w),height=Math.max(cell.h,needed);
+      if(width!==cell.w||height!==cell.h){cell.w=width;cell.h=height;grown++;}
+    }
+    return grown;
+  }
+  const v21Alpha14BaseAutoLayoutPool=v2Alpha32AutoLayoutPool;
+  v2Alpha32AutoLayoutPool=function(pool){
+    if(pool&&pool.shape==='swimlane'&&!isFullyLocked(pool))v21Alpha14FitShapesToText(pool);
+    return v21Alpha14BaseAutoLayoutPool(pool);
+  };
+
+  /* ================= Room to breathe, and labels placed where there is space ================= */
+  /* Making labels legible was only half the job: a 260px label still lands wherever the connector's midpoint
+     happens to be, which on this document meant 15 of 19 labels sitting on top of a shape. Widen the gaps
+     between columns, give each lane vertical slack, then search for a clear spot for every label. */
+  const V21_ALPHA15_COLUMN_GAP=150,V21_ALPHA15_LANE_PADDING=130;
+  /* Measured on a 47-shape, 58-connector, 9-lane flow: channels alone took crossings 60 -> 58 and a heavier crossing charge alone
+     took 60 -> 59, because neither helps without the other - the charge needs somewhere to go, and the
+     channels need a reason to be used. Together they give 60 -> 50. Beyond 4 it gets worse and much slower
+     (8 gave 57 crossings and 36s), because every repeat multiplies the search's inner loop. */
+  let V21_ALPHA16_CROSS_WEIGHT=4;
+
+  function v21Alpha15Clusters(pool,children,horizontal){
+    const centreOf=cell=>horizontal?cell.x+cell.w/2:cell.y+cell.h/2;
+    const tolerance=Math.max(12,state.gridSize||10),clusters=[];
+    for(const cell of [...children].sort((a,b)=>centreOf(a)-centreOf(b))){
+      const value=centreOf(cell),last=clusters[clusters.length-1];
+      if(last&&Math.abs(value-last.centre)<=tolerance){
+        last.items.push(cell);
+        last.centre=last.items.reduce((sum,item)=>sum+centreOf(item),0)/last.items.length;
+      }else clusters.push({centre:value,items:[cell]});
+    }
+    return clusters;
+  }
+  function v21Alpha15SpreadColumns(pool,gap){
+    const horizontal=pool.orientation!=='vertical';
+    const children=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id&&!isPositionLocked(cell));
+    if(children.length<2)return;
+    const sizeOf=cell=>horizontal?cell.w:cell.h;
+    let cursor=null;
+    for(const cluster of v21Alpha15Clusters(pool,children,horizontal)){
+      const half=Math.max(...cluster.items.map(cell=>sizeOf(cell)/2));
+      const centre=cursor===null?cluster.centre:cursor+half;
+      for(const cell of cluster.items){
+        if(horizontal)cell.x=Math.round(centre-cell.w/2);else cell.y=Math.round(centre-cell.h/2);
+      }
+      cursor=centre+half+gap;
+    }
+    const far=Math.max(...children.map(cell=>horizontal?cell.x+cell.w:cell.y+cell.h));
+    if(horizontal)pool.w=Math.max(pool.w,Math.round(far-pool.x+60));
+    else pool.h=Math.max(pool.h,Math.round(far-pool.y+60));
+  }
+  function v21Alpha15ExpandLanes(pool,padding){
+    const horizontal=pool.orientation!=='vertical',byLane=new Map();
+    for(const cell of state.cells){
+      if(!isVertex(cell)||cell.shape==='swimlane'||cell.containerId!==pool.id)continue;
+      if(!byLane.has(cell.laneId))byLane.set(cell.laneId,[]);
+      byLane.get(cell.laneId).push(cell);
+    }
+    let desired=0;
+    for(const lane of pool.lanes){
+      const items=byLane.get(lane.id)||[];
+      if(items.length)desired=Math.max(desired,Math.max(...items.map(cell=>horizontal?cell.h:cell.w))+padding);
+      desired=Math.max(desired,Number(lane.size)||0);
+    }
+    if(!desired)return;
+    pool.lanes.forEach(lane=>{lane.size=snapValue(desired);});
+    if(horizontal)pool.h=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0);
+    else pool.w=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0);
+    const byId=new Map(laneMetrics(pool).map(metric=>[metric.id,metric]));
+    for(const [laneId,items] of byLane){
+      const metric=byId.get(laneId);if(!metric)continue;
+      const content=laneContentRect(pool,metric);
+      for(const cell of items){
+        if(horizontal)cell.y=snapValue(content.y+(content.h-cell.h)/2);
+        else cell.x=snapValue(content.x+(content.w-cell.w)/2);
+      }
+    }
+  }
+  function v21Alpha15RectOverlap(a,b){
+    return Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))
+      *Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));
+  }
+  function v21Alpha15PointAt(path,acc,total,t){
+    const distance=t*total;
+    for(let i=0;i<path.length-1;i++){
+      if(distance<=acc[i+1]||i===path.length-2){
+        const span=acc[i+1]-acc[i]||1,f=clamp((distance-acc[i])/span,0,1);
+        return{x:path[i].x+(path[i+1].x-path[i].x)*f,y:path[i].y+(path[i+1].y-path[i].y)*f};
+      }
+    }
+    return path[0];
+  }
+  function v21Alpha15PlaceLabels(edges){
+    const shapes=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane');
+    const labelled=edges.filter(edge=>edge.label&&!isFullyLocked(edge));
+    if(!labelled.length)return 0;
+    const segments=[];
+    for(const edge of state.cells){
+      if(!isEdge(edge))continue;
+      const points=routePoints(edge)||[];
+      for(let i=0;i<points.length-1;i++)segments.push({id:edge.id,a:points[i],b:points[i+1]});
+    }
+    const placed=[];let clear=0;
+    for(const edge of labelled){
+      edge.labelOffset={x:0,y:0};
+      const path=routePoints(edge)||[];
+      if(path.length<2)continue;
+      const box=v21Alpha14LabelBox(edge.label,Number(edge.fontSize||12)),base=pathMidpoint(edge);
+      let total=0;const acc=[0];
+      for(let i=0;i<path.length-1;i++){
+        total+=Math.abs(path[i+1].x-path[i].x)+Math.abs(path[i+1].y-path[i].y);acc.push(total);
+      }
+      if(!total)continue;
+      const offsets=[[0,0],[0,-(box.h/2+12)],[0,box.h/2+12],[0,-(box.h+24)],[0,box.h+24],
+        [-(box.w/2+16),0],[box.w/2+16,0],[0,-(box.h*1.5+34)],[0,box.h*1.5+34]];
+      let best=null;
+      for(const t of [0.5,0.42,0.58,0.34,0.66,0.26,0.74]){
+        const anchor=v21Alpha15PointAt(path,acc,total,t);
+        for(const [dx,dy] of offsets){
+          const cx=anchor.x+dx,cy=anchor.y+dy;
+          const rect={x:cx-box.w/2,y:cy-box.h/2,w:box.w,h:box.h};
+          let score=Math.hypot(cx-base.x,cy-base.y)*0.05;
+          for(const shape of shapes)if(v21Alpha15RectOverlap(rect,shape)>25)score+=1000;
+          for(const other of placed)if(v21Alpha15RectOverlap(rect,other)>25)score+=900;
+          for(const segment of segments){
+            if(segment.id===edge.id)continue;
+            if(v2Alpha44SegmentHitsRect(segment.a,segment.b,rect))score+=80;
+          }
+          if(!best||score<best.score)best={score,cx,cy,rect};
+          if(best.score<1)break;
+        }
+        if(best&&best.score<1)break;
+      }
+      if(!best)continue;
+      edge.labelOffset={x:Math.round(best.cx-base.x),y:Math.round(best.cy-base.y)};
+      placed.push(best.rect);
+      if(best.score<1)clear++;
+    }
+    return clear;
+  }
+  /* Re-routing every connector against the current picture does not settle: measured over four passes the
+     crossing count went 51, 64, 53, 51 as the routes chased each other. So score each pass and keep the best
+     one rather than whatever the last pass happened to leave behind. */
+  function v21Alpha15Score(pool){
+    const ids=new Set(state.cells.filter(cell=>isVertex(cell)&&cell.containerId===pool.id).map(cell=>cell.id));
+    const segments=[];let bends=0,length=0;
+    for(const edge of state.cells){
+      if(!isEdge(edge)||!ids.has(edge.source)||!ids.has(edge.target))continue;
+      const points=routePoints(edge)||[];let last=null;
+      for(let i=0;i<points.length-1;i++){
+        const a=points[i],b=points[i+1],dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
+        const direction=dx>=dy?'h':'v';if(last&&last!==direction)bends++;last=direction;length+=dx+dy;
+        if(dx<=1&&dy<=1)continue;
+        segments.push({id:edge.id,h:dy<=1,x0:Math.min(a.x,b.x),x1:Math.max(a.x,b.x),y0:Math.min(a.y,b.y),y1:Math.max(a.y,b.y)});
+      }
+    }
+    let crossings=0,overlap=0;
+    for(let i=0;i<segments.length;i++)for(let j=i+1;j<segments.length;j++){
+      const A=segments[i],B=segments[j];if(A.id===B.id)continue;
+      /* Deliberately a tight tolerance. Widening this to match what the eye sees was tried and made the
+         selection worse on both counts (crossings 48 -> 60, near-parallel 30px -> 781px): the larger overlap
+         numbers swamped the crossing term. Separation is handled by the corridor pass, not by this score. */
+      if(A.h&&B.h&&Math.abs(A.y0-B.y0)<2){const o=Math.min(A.x1,B.x1)-Math.max(A.x0,B.x0);if(o>6)overlap+=o;}
+      else if(!A.h&&!B.h&&Math.abs(A.x0-B.x0)<2){const o=Math.min(A.y1,B.y1)-Math.max(A.y0,B.y0);if(o>6)overlap+=o;}
+      else if(A.h!==B.h){const H=A.h?A:B,V=A.h?B:A;
+        if(V.x0>H.x0+1&&V.x0<H.x1-1&&H.y0>V.y0+1&&H.y0<V.y1-1)crossings++;}
+    }
+    /* Crossings and overlapping runs are what make the chart unreadable, so they dominate; total length is
+       only a tie-breaker, otherwise a shorter but busier layout wins. */
+    return{crossings,overlap,bends,length,total:crossings*40+overlap*1.2+bends*2+length*0.002};
+  }
+  function v21Alpha15Snapshot(pool){
+    const ids=new Set(state.cells.filter(cell=>isVertex(cell)&&cell.containerId===pool.id).map(cell=>cell.id));
+    const snapshot=new Map();
+    for(const edge of state.cells){
+      if(!isEdge(edge)||!ids.has(edge.source)||!ids.has(edge.target))continue;
+      snapshot.set(edge.id,{waypoints:deepClone(edge.waypoints||[]),sourcePort:edge.sourcePort,
+        targetPort:edge.targetPort,portBias:deepClone(edge.portBias||null)});
+    }
+    return snapshot;
+  }
+  function v21Alpha15Restore(snapshot){
+    for(const [id,saved] of snapshot){
+      const edge=getCell(id);if(!edge)continue;
+      edge.waypoints=deepClone(saved.waypoints);edge.sourcePort=saved.sourcePort;
+      edge.targetPort=saved.targetPort;edge.portBias=deepClone(saved.portBias);
+      v2Alpha46RouteCache.delete(edge);
+    }
+  }
+  /* Each route asked every other connector to recompute its own path just to find the segments to avoid,
+     which is quadratic. Cache them per pass, and only offer the ones near this connector's own corridor. */
+  function v21Alpha15WithUsedCache(work){
+    const base=v2Alpha46RawUsedSegments,cache=new Map();
+    for(const edge of state.cells)if(isEdge(edge))cache.set(edge.id,routePoints(edge)||[]);
+    v2Alpha46RawUsedSegments=function(excludeId){
+      const edge=excludeId?getCell(excludeId):null;
+      const source=edge?getCell(edge.source):null,target=edge?getCell(edge.target):null;
+      let box=null;
+      if(source&&target){
+        const pad=240;
+        box={x0:Math.min(source.x,target.x)-pad,y0:Math.min(source.y,target.y)-pad,
+          x1:Math.max(source.x+source.w,target.x+target.w)+pad,y1:Math.max(source.y+source.h,target.y+target.h)+pad};
+      }
+      /* The grid search charges a flat 120 per connector it crosses, measured against a path cost in pixels,
+         which is too cheap to make a long route detour. The constant sits inside the search, so repeat each
+         segment to scale the charge: crossing one counted twice costs 240. */
+      const used=[],weight=Math.max(1,Math.round(V21_ALPHA16_CROSS_WEIGHT));
+      for(const [id,points] of cache){
+        if(id===excludeId)continue;
+        for(let i=0;i<points.length-1;i++){
+          const a=points[i],b=points[i+1];
+          if(box&&(Math.max(a.x,b.x)<box.x0||Math.min(a.x,b.x)>box.x1
+            ||Math.max(a.y,b.y)<box.y0||Math.min(a.y,b.y)>box.y1))continue;
+          for(let k=0;k<weight;k++)used.push([a,b]);
+        }
+      }
+      return used;
+    };
+    try{return work(cache);}finally{v2Alpha46RawUsedSegments=base;}
+  }
+  /* The grid search only ever considers coordinates taken from shape edges, so the wide gaps between columns
+     and the slack inside each lane are invisible to it - there is simply no line there to travel along, which
+     is why raising the crossing penalty changed nothing. Feed it explicit channels down the middle of each
+     gap. A zero-size rect contributes its coordinate to the grid but can never be hit, so it is an inert way
+     to add a candidate line without touching the search itself. */
+  /* Which side a connector leaves a shape from was decided by one rule - different lane means top or bottom,
+     same lane means left or right - with no regard for what is actually in the way. A connector heading down
+     and to the right was forced out of the bottom even when leaving from the side would have avoided the
+     traffic below it. Try the plausible sides, sketch the elbow each would produce, and keep the cleanest.
+     The sketch is cheap geometry, so this costs a fraction of what routing every option would. */
+  let v21Alpha18Context=null;
+  function v21Alpha18BuildContext(){
+    const shapes=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&!isCellHiddenByLane(cell));
+    const traffic=[];
+    for(const edge of state.cells){
+      if(!isEdge(edge))continue;
+      const points=routePoints(edge)||[];
+      for(let i=0;i<points.length-1;i++)traffic.push({id:edge.id,a:points[i],b:points[i+1]});
+    }
+    return{shapes,traffic,currentEdge:null};
+  }
+  function v21Alpha18Sketch(source,sourcePort,target,targetPort){
+    const from=v2Alpha44PortPoint(source,sourcePort),to=v2Alpha44PortPoint(target,targetPort);
+    const [fx,fy]=v2Alpha44PortVector(sourcePort),[tx,ty]=v2Alpha44PortVector(targetPort),stub=26;
+    const out={x:from.x+fx*stub,y:from.y+fy*stub},into={x:to.x+tx*stub,y:to.y+ty*stub};
+    return[[from,out,{x:into.x,y:out.y},into,to],[from,out,{x:out.x,y:into.y},into,to]];
+  }
+  /* Count both ways a sketch can interfere: cutting across another connector, and running along on top of
+     one. Scoring only the crossings traded a couple of them for connectors drawn over each other, which is
+     the harder of the two to read. */
+  function v21Alpha18Interference(points,traffic,skipId){
+    let crossings=0,overlap=0;
+    for(let i=0;i<points.length-1;i++){
+      const a=points[i],b=points[i+1],horizontal=Math.abs(a.y-b.y)<=1,vertical=Math.abs(a.x-b.x)<=1;
+      if(horizontal===vertical)continue;
+      for(const segment of traffic){
+        if(segment.id===skipId)continue;
+        const other=Math.abs(segment.a.y-segment.b.y)<=1;
+        if(other===horizontal){
+          if(horizontal&&Math.abs(a.y-segment.a.y)<3){
+            overlap+=Math.max(0,Math.min(Math.max(a.x,b.x),Math.max(segment.a.x,segment.b.x))
+              -Math.max(Math.min(a.x,b.x),Math.min(segment.a.x,segment.b.x)));
+          }else if(!horizontal&&Math.abs(a.x-segment.a.x)<3){
+            overlap+=Math.max(0,Math.min(Math.max(a.y,b.y),Math.max(segment.a.y,segment.b.y))
+              -Math.max(Math.min(a.y,b.y),Math.min(segment.a.y,segment.b.y)));
+          }
+          continue;
+        }
+        const H=horizontal?{x0:Math.min(a.x,b.x),x1:Math.max(a.x,b.x),y:a.y}
+          :{x0:Math.min(segment.a.x,segment.b.x),x1:Math.max(segment.a.x,segment.b.x),y:segment.a.y};
+        const V=horizontal?{y0:Math.min(segment.a.y,segment.b.y),y1:Math.max(segment.a.y,segment.b.y),x:segment.a.x}
+          :{y0:Math.min(a.y,b.y),y1:Math.max(a.y,b.y),x:a.x};
+        if(V.x>H.x0+1&&V.x<H.x1-1&&H.y>V.y0+1&&H.y<V.y1-1)crossings++;
+      }
+    }
+    return{crossings,overlap};
+  }
+  const v21Alpha18BaseChoosePorts=v21Alpha12ChoosePorts;
+  v21Alpha12ChoosePorts=function(source,target,pool,metrics){
+    const fallback=v21Alpha18BaseChoosePorts(source,target,pool,metrics);
+    const context=v21Alpha18Context;
+    if(!context||!source||!target)return fallback;
+    const sx=source.x+source.w/2,sy=source.y+source.h/2,tx=target.x+target.w/2,ty=target.y+target.h/2;
+    const sourceSides=[...new Set([fallback[0],tx>=sx?'e':'w',ty>=sy?'s':'n'])];
+    const targetSides=[...new Set([fallback[1],tx>=sx?'w':'e',ty>=sy?'n':'s'])];
+    let best=null;
+    for(const sourcePort of sourceSides)for(const targetPort of targetSides){
+      for(const sketch of v21Alpha18Sketch(source,sourcePort,target,targetPort)){
+        const points=v2Alpha44Simplify(sketch);
+        let blocked=0,length=0,bends=0,last=null;
+        for(let i=0;i<points.length-1;i++){
+          const a=points[i],b=points[i+1],dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
+          length+=dx+dy;
+          const direction=dx>=dy?'h':'v';if(last&&last!==direction)bends++;last=direction;
+          for(const shape of context.shapes){
+            if(shape.id===source.id||shape.id===target.id)continue;
+            if(v2Alpha44SegmentHitsRect(a,b,shape)){blocked++;break;}
+          }
+        }
+        const {crossings,overlap}=v21Alpha18Interference(points,context.traffic,context.currentEdge);
+        const preferred=(sourcePort===fallback[0]&&targetPort===fallback[1])?-40:0;
+        const score=blocked*1200+crossings*60+overlap*1.5+bends*25+length*0.05+preferred;
+        if(!best||score<best.score)best={score,ports:[sourcePort,targetPort]};
+      }
+    }
+    return best?best.ports:fallback;
+  };
+  const v21Alpha18BaseAssignPorts=v21Alpha12AssignPorts;
+  v21Alpha12AssignPorts=function(edge,pool,metrics){
+    if(v21Alpha18Context)v21Alpha18Context.currentEdge=edge?.id||null;
+    return v21Alpha18BaseAssignPorts(edge,pool,metrics);
+  };
+
+  let v21Alpha16Channels=null;
+  function v21Alpha16ComputeChannels(pool){
+    const horizontal=pool.orientation!=='vertical';
+    const children=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id);
+    if(children.length<2)return null;
+    const across=[],along=[];
+    const clusters=v21Alpha15Clusters(pool,children,horizontal);
+    for(let i=0;i<clusters.length-1;i++){
+      const near=Math.max(...clusters[i].items.map(cell=>horizontal?cell.x+cell.w:cell.y+cell.h));
+      const far=Math.min(...clusters[i+1].items.map(cell=>horizontal?cell.x:cell.y));
+      if(far-near<40)continue;
+      across.push(Math.round((near+far)/2));
+    }
+    for(const metric of laneMetrics(pool)){
+      const items=children.filter(cell=>cell.laneId===metric.id);
+      if(!items.length)continue;
+      const content=laneContentRect(pool,metric);
+      const low=horizontal?content.y:content.x,high=horizontal?content.y+content.h:content.x+content.w;
+      const first=Math.min(...items.map(cell=>horizontal?cell.y:cell.x));
+      const last=Math.max(...items.map(cell=>horizontal?cell.y+cell.h:cell.x+cell.w));
+      if(first-low>34)along.push(Math.round((low+first)/2));
+      if(high-last>34)along.push(Math.round((last+high)/2));
+    }
+    const unique=values=>[...new Set(values)].filter(Number.isFinite);
+    return horizontal?{xs:unique(across),ys:unique(along)}:{xs:unique(along),ys:unique(across)};
+  }
+  const v21Alpha16BaseRoutingContext=v2Alpha46RoutingContext;
+  v2Alpha46RoutingContext=function(source,target,startStub,endStub){
+    const context=v21Alpha16BaseRoutingContext(source,target,startStub,endStub);
+    if(!v21Alpha16Channels)return context;
+    for(const x of v21Alpha16Channels.xs)context.obstacles.push({x,y:context.bounds.y,w:0,h:0,id:'channel-x'});
+    for(const y of v21Alpha16Channels.ys)context.obstacles.push({x:context.bounds.x,y,w:0,h:0,id:'channel-y'});
+    return context;
+  };
+
+  const v21Alpha15BaseAutoLayoutPool=v2Alpha32AutoLayoutPool;
+  v2Alpha32AutoLayoutPool=function(pool){
+    v21Alpha15DeferRouting=true;
+    let result;
+    try{result=v21Alpha15BaseAutoLayoutPool(pool);}finally{v21Alpha15DeferRouting=false;}
+    if(!result?.changed)return result;
+    v21Alpha15SpreadColumns(pool,V21_ALPHA15_COLUMN_GAP);
+    v21Alpha15ExpandLanes(pool,V21_ALPHA15_LANE_PADDING);
+    v21Alpha16Channels=v21Alpha16ComputeChannels(pool);
+    let routable=[],best=null;
+    try{
+    v21Alpha15WithUsedCache(cache=>{
+      routable=v21Alpha12RoutePool(pool);
+      routable.forEach(edge=>cache.set(edge.id,routePoints(edge)||[]));
+      best={score:v21Alpha15Score(pool).total,snapshot:v21Alpha15Snapshot(pool)};
+      for(let pass=0;pass<3;pass++){
+        v21Alpha12RoutePool(pool,{reassign:false});
+        routable.forEach(edge=>cache.set(edge.id,routePoints(edge)||[]));
+        const score=v21Alpha15Score(pool).total;
+        if(score<best.score)best={score,snapshot:v21Alpha15Snapshot(pool)};
+      }
+    });
+    }finally{v21Alpha16Channels=null;}
+    v21Alpha15Restore(best.snapshot);
+    v21Alpha15PlaceLabels(routable);
+    v2Alpha29EnsurePageContains(pool);
+    return result;
+  };
+
+  const jandoBusyBaseImport=importDrawioXml;
+  importDrawioXml=function(text,filename='Opened.drawio'){
+    const size=text?`${Math.max(1,Math.round(String(text).length/1024))} KB`:'';
+    return jandoWithBusy('Opening diagram',[filename,size].filter(Boolean).join(' · '),()=>jandoBusyBaseImport(text,filename));
+  };
+  const jandoBusyBaseLoadFile=loadFile;
+  loadFile=function(file){
+    if(!file)return jandoBusyBaseLoadFile(file);
+    if(!v110IsImageFile(file))return jandoBusyBaseLoadFile(file);
+    return jandoWithBusy('Opening image',file.name||'',()=>jandoBusyBaseLoadFile(file));
+  };
+  const jandoBusyBaseAutoLayout=v2Alpha32AutoLayout;
+  v2Alpha32AutoLayout=function(scopePool=null){
+    return jandoWithBusy('Arranging swimlane','Sizing shapes to their text, then routing connectors around them',()=>jandoBusyBaseAutoLayout(scopePool));
+  };
+  render();
 
 })();
 </script>
