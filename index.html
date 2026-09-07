@@ -5940,12 +5940,45 @@
     svg.classList.add('panning');
   }
 
+  /* How far the divider may actually travel, and the move itself. Kept as functions so the drag handler and
+     the tests exercise the same code rather than two copies of it. */
+  function laneResizeApplied(info, delta) {
+    const minSize = 38;
+    const floorFirst = Math.max(minSize, info.minFirst || 0);
+    const floorSecond = Math.max(minSize, info.minSecond || 0);
+    return clamp(delta, floorFirst - info.firstSize, info.secondSize - floorSecond);
+  }
+  function applyLaneResize(pool, info, applied) {
+    pool.lanes[info.index].size = info.firstSize + applied;
+    pool.lanes[info.index + 1].size = info.secondSize - applied;
+    const vertical = pool.orientation === 'vertical';
+    info.secondChildren.forEach((original) => {
+      const child = getCell(original.id);
+      if (child) { child.x = original.x + (vertical ? applied : 0); child.y = original.y + (vertical ? 0 : applied); }
+    });
+  }
+
   function beginLaneResize(pool, index, world) {
     ensureSwimlaneDefaults(pool);
     actualizeLaneSizes(pool);
     const first = pool.lanes[index];
     const second = pool.lanes[index + 1];
     if (!first || !second) return;
+    /* Work out how far the divider can travel before a lane's own shapes would be pushed out of it.
+       The two lanes spill in different directions: the first lane's shapes stay where they are while its
+       far edge moves in on them, whereas the second lane's shapes travel with the divider and so run out
+       of its opposite edge. Cap the floor at the lane's current size, so a lane that is already overfull
+       is not yanked open the moment the divider is touched. */
+    const horizontal = pool.orientation !== 'vertical';
+    const metrics = laneMetrics(pool);
+    const near = (metric) => (horizontal ? metric.y : metric.x);
+    const far = (cell) => (horizontal ? cell.y + cell.h : cell.x + cell.w);
+    const margin = 12;
+    const contentSize = (lane, metric) => {
+      const children = laneChildren(pool.id, lane.id);
+      if (!children.length) return 0;
+      return Math.max(...children.map((cell) => far(cell) - near(metric))) + margin;
+    };
     state.laneResize = {
       poolId: pool.id,
       index,
@@ -5953,6 +5986,8 @@
       before: snapshot(),
       firstSize: first.size,
       secondSize: second.size,
+      minFirst: Math.min(contentSize(first, metrics[index]), first.size),
+      minSecond: Math.min(contentSize(second, metrics[index + 1]), second.size),
       secondChildren: laneChildren(pool.id, second.id).map((cell) => ({ id: cell.id, x: cell.x, y: cell.y })),
       moved: false
     };
@@ -6248,16 +6283,10 @@
       if (!pool) return;
       const deltaRaw = pool.orientation === 'vertical' ? world.x - info.start.x : world.y - info.start.y;
       const delta = state.snap ? snapValue(deltaRaw) : deltaRaw;
-      const minSize = 38;
-      const applied = clamp(delta, minSize - info.firstSize, info.secondSize - minSize);
+      const applied = laneResizeApplied(info, delta);
       if (!info.moved && Math.abs(applied) < 1) return;
       if (!info.moved) { pushSnapshot(info.before); info.moved = true; }
-      pool.lanes[info.index].size = info.firstSize + applied;
-      pool.lanes[info.index + 1].size = info.secondSize - applied;
-      info.secondChildren.forEach((original) => {
-        const child = getCell(original.id);
-        if (child) { child.x = original.x + (pool.orientation === 'vertical' ? applied : 0); child.y = original.y + (pool.orientation === 'vertical' ? 0 : applied); }
-      });
+      applyLaneResize(pool, info, applied);
       render();
       return;
     }
@@ -17580,7 +17609,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.21';
+  const JANDO_VERSION='2.1.0-alpha.22';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17660,7 +17689,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha21';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha22';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -17728,6 +17757,49 @@
   window.JandoStudio.debugCrossWeight=value=>{
     if(value!==undefined)V21_ALPHA16_CROSS_WEIGHT=value;
     return V21_ALPHA16_CROSS_WEIGHT;
+  };
+  /* Shrinking the whole swimlane scales every lane down together, and nothing stopped that going below what
+     the lanes hold - setting the height of a seven-lane pool to 420 pushed all 24 shapes out of their lanes
+     at once. Hold the pool at the smallest size its content still fits in, the same rule the divider follows. */
+  function v21Alpha22MinPoolCross(pool){
+    ensureSwimlaneDefaults(pool);
+    const horizontal=pool.orientation!=='vertical';
+    const metrics=laneMetrics(pool);
+    let total=0;
+    for(const metric of metrics){
+      const children=laneChildren(pool.id,metric.id);
+      const near=horizontal?metric.y:metric.x;
+      const needed=children.length
+        ?Math.max(...children.map(cell=>(horizontal?cell.y+cell.h:cell.x+cell.w)-near))+12
+        :0;
+      total+=Math.max(38,needed);
+    }
+    return Math.ceil(total);
+  }
+  const v21Alpha22BaseScaleLaneSizes=scaleLaneSizes;
+  scaleLaneSizes=function(cell,newDimension){
+    if(cell?.shape==='swimlane'){
+      const floor=v21Alpha22MinPoolCross(cell);
+      const current=cell.orientation==='vertical'?cell.w:cell.h;
+      /* Never force a pool open that is already too small; only refuse to make it worse. */
+      const limit=Math.min(floor,Math.max(current,0)||floor);
+      if(Number(newDimension)<limit){
+        showToast('Swimlane kept at the smallest size its lane contents fit.',1800);
+        newDimension=limit;
+      }
+    }
+    return v21Alpha22BaseScaleLaneSizes(cell,newDimension);
+  };
+
+  window.JandoStudio.debugLaneResize=(index,delta)=>{
+    const pool=state.cells.find(cell=>isVertex(cell)&&cell.shape==='swimlane');
+    if(!pool||!pool.lanes[index+1])return null;
+    beginLaneResize(pool,index,{x:0,y:0});
+    const info=state.laneResize;if(!info)return null;
+    const applied=laneResizeApplied(info,delta);
+    applyLaneResize(pool,info,applied);
+    state.laneResize=null;render();
+    return{requested:delta,applied,sizes:pool.lanes.map(lane=>Math.round(lane.size))};
   };
   window.JandoStudio.debugRoutePool=(reassign=false)=>{
     const pool=state.cells.find(cell=>isVertex(cell)&&cell.shape==='swimlane');
