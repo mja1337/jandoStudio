@@ -15606,7 +15606,7 @@
     if(!source||!target)return connectorPath(start,end,'orthogonal',false,sourcePort,targetPort);
     const routed=v2Alpha46RouteBetween(source,target,start,end,sourcePort,targetPort,edge?.id||null);return pathFromPoints(routed?.path||defaultRoutePoints(start,end,'orthogonal',sourcePort,targetPort),false);
   }
-  function v2Alpha46AutoRouteEdge(edge){if(!edge||!isEdge(edge)||isFullyLocked(edge))return false;edge.route='orthogonal';edge.waypoints=[];v2Alpha46RouteCache.delete(edge);return true;}
+  function v2Alpha46AutoRouteEdge(edge){if(!edge||!isEdge(edge)||isFullyLocked(edge))return false;edge.route='orthogonal';edge.waypoints=[];edge.importedRoute=false;v2Alpha46RouteCache.delete(edge);return true;}
 
   const v2Alpha46BaseRenderEdgeProperties=renderEdgeProperties;
   renderEdgeProperties=function(cell){
@@ -17409,22 +17409,45 @@
     if(!source||!target)return false;
     const [sourcePort,targetPort]=v21Alpha12ChoosePorts(source,target,pool,metrics);
     edge.route='orthogonal';edge.sourcePort=sourcePort;edge.targetPort=targetPort;edge.waypoints=[];
-    edge.portBias={source:0,target:0};v2Alpha46RouteCache.delete(edge);
+    edge.portBias={source:0,target:0};edge.importedRoute=false;v2Alpha46RouteCache.delete(edge);
     return true;
   }
   function v21Alpha12RouteArranged(edge,pool,metrics){
     const source=getCell(edge.source),target=getCell(edge.target);
     if(!source||!target)return;
-    const sourcePort=normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort);
     edge.waypoints=[];v2Alpha46RouteCache.delete(edge);
-    const start=v21Alpha12EdgePort(edge,'source')||v2Alpha44PortPoint(source,sourcePort);
-    const end=v21Alpha12EdgePort(edge,'target')||v2Alpha44PortPoint(target,targetPort);
-    const routed=v2Alpha46RouteBetween(source,target,start,end,sourcePort,targetPort,edge.id);
-    if(!routed?.path?.length)return;
     const obstacles=v2Alpha46VisibleRoutingCells(source,target).map(cell=>v2Alpha44ExpandedRect(cell,12));
-    const path=v21Alpha12TightenPath(routed.path,obstacles);
-    if(path.length<2||v2Alpha46PathHitsObstacles(path,obstacles))return;
-    edge.waypoints=path.slice(1,-1).map(point=>({x:point.x,y:point.y}));
+    /* Exact bounds, every segment: a stub leaving a port lies on the boundary and does not register, while
+       a run cutting back across the box does. */
+    const ends=[v21Alpha20EndpointRect(source),v21Alpha20EndpointRect(target)].filter(Boolean);
+    const crossesOwn=path=>{
+      for(let i=0;i<path.length-1;i++)
+        if(ends.some(rect=>v2Alpha44SegmentHitsRect(path[i],path[i+1],rect)))return true;
+      return false;
+    };
+    /* Rather than give up when the chosen sides produce a route across one of the end shapes, try the other
+       sensible sides. Giving up left the connector to be routed live on every render, which also excluded it
+       from corridor separation and let overlapping runs back in. */
+    const sx=source.x+source.w/2,sy=source.y+source.h/2,tx=target.x+target.w/2,ty=target.y+target.h/2;
+    const sourceSides=[...new Set([normalizePortName(edge.sourcePort),ty>=sy?'s':'n',tx>=sx?'e':'w'])].filter(p=>p!=='auto');
+    const targetSides=[...new Set([normalizePortName(edge.targetPort),ty>=sy?'n':'s',tx>=sx?'w':'e'])].filter(p=>p!=='auto');
+    const originalBias=deepClone(edge.portBias||{source:0,target:0});
+    for(const sourcePort of sourceSides)for(const targetPort of targetSides){
+      const first=sourcePort===sourceSides[0]&&targetPort===targetSides[0];
+      edge.sourcePort=sourcePort;edge.targetPort=targetPort;
+      /* Fanned offsets only mean anything on the side they were measured for. */
+      edge.portBias=first?originalBias:{source:0,target:0};
+      const start=v21Alpha12EdgePort(edge,'source')||v2Alpha44PortPoint(source,sourcePort);
+      const end=v21Alpha12EdgePort(edge,'target')||v2Alpha44PortPoint(target,targetPort);
+      const routed=v2Alpha46RouteBetween(source,target,start,end,sourcePort,targetPort,edge.id);
+      if(!routed?.path?.length)continue;
+      const path=v21Alpha12TightenPath(routed.path,obstacles);
+      if(path.length<2||v2Alpha46PathHitsObstacles(path,obstacles)||crossesOwn(path))continue;
+      edge.waypoints=path.slice(1,-1).map(point=>({x:point.x,y:point.y}));
+      return;
+    }
+    edge.sourcePort=sourceSides[0]||edge.sourcePort;edge.targetPort=targetSides[0]||edge.targetPort;
+    edge.portBias=originalBias;edge.waypoints=[];
   }
   /* Corridor separation. v2Alpha44SegmentCross only tests a horizontal span against a vertical one, so two
      routes running along the very same line cost the search nothing and stack invisibly on top of each other.
@@ -17557,7 +17580,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.18';
+  const JANDO_VERSION='2.1.0-alpha.21';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17637,7 +17660,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha18';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha21';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -18121,8 +18144,11 @@
           const a=points[i],b=points[i+1],dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
           length+=dx+dy;
           const direction=dx>=dy?'h':'v';if(last&&last!==direction)bends++;last=direction;
+          /* The two end shapes count as obstacles too. No exemption is needed for the stubs: tested against
+             exact bounds, a run leaving a port never registers, while one cutting back across the box does.
+             Exempting the first and last segment instead was wrong, because Simplify merges the stub into
+             the segment beside it - so the very run that crossed the shape became the one excused. */
           for(const shape of context.shapes){
-            if(shape.id===source.id||shape.id===target.id)continue;
             if(v2Alpha44SegmentHitsRect(a,b,shape)){blocked++;break;}
           }
         }
@@ -18166,9 +18192,20 @@
     const unique=values=>[...new Set(values)].filter(Number.isFinite);
     return horizontal?{xs:unique(across),ys:unique(along)}:{xs:unique(along),ys:unique(across)};
   }
+  /* The obstacle list leaves out the connector's own two shapes, so nothing stopped a route running straight
+     across the box it starts or ends at, drawing a line straight through the middle of its own end shape.
+     Add them back at their exact bounds: the stub leaving a port sits on the boundary rather than inside it,
+     so it still gets out, but the rest of the path can no longer cut through. */
+  function v21Alpha20EndpointRect(cell){
+    return cell?{x:cell.x,y:cell.y,w:cell.w,h:cell.h,id:cell.id}:null;
+  }
   const v21Alpha16BaseRoutingContext=v2Alpha46RoutingContext;
   v2Alpha46RoutingContext=function(source,target,startStub,endStub){
     const context=v21Alpha16BaseRoutingContext(source,target,startStub,endStub);
+    for(const cell of [source,target]){
+      const rect=v21Alpha20EndpointRect(cell);
+      if(rect)context.obstacles.push(rect);
+    }
     if(!v21Alpha16Channels)return context;
     for(const x of v21Alpha16Channels.xs)context.obstacles.push({x,y:context.bounds.y,w:0,h:0,id:'channel-x'});
     for(const y of v21Alpha16Channels.ys)context.obstacles.push({x:context.bounds.x,y,w:0,h:0,id:'channel-y'});
@@ -18177,6 +18214,17 @@
 
   const v21Alpha15BaseAutoLayoutPool=v2Alpha32AutoLayoutPool;
   v2Alpha32AutoLayoutPool=function(pool){
+    /* Drop the "keep it as imported" mark before anything measures the board. Arrange seeds its first pass
+       and its port choices from the routes currently on screen, so leaving imported connectors drawing their
+       original simple elbows skewed those inputs and produced a measurably worse layout. */
+    if(pool){
+      const inside=new Set(state.cells.filter(cell=>isVertex(cell)&&cell.containerId===pool.id).map(cell=>cell.id));
+      for(const cell of state.cells){
+        if(isEdge(cell)&&inside.has(cell.source)&&inside.has(cell.target)){
+          cell.importedRoute=false;v2Alpha46RouteCache.delete(cell);
+        }
+      }
+    }
     v21Alpha15DeferRouting=true;
     let result;
     try{result=v21Alpha15BaseAutoLayoutPool(pool);}finally{v21Alpha15DeferRouting=false;}
@@ -18190,6 +18238,8 @@
       routable=v21Alpha12RoutePool(pool);
       routable.forEach(edge=>cache.set(edge.id,routePoints(edge)||[]));
       best={score:v21Alpha15Score(pool).total,snapshot:v21Alpha15Snapshot(pool)};
+      /* Four passes, not two. Cutting back to two was tried for speed and let connectors through shapes
+         again: a few routes only find a clean line once earlier passes have settled the ones around them. */
       for(let pass=0;pass<3;pass++){
         v21Alpha12RoutePool(pool,{reassign:false});
         routable.forEach(edge=>cache.set(edge.id,routePoints(edge)||[]));
@@ -18202,6 +18252,161 @@
     v21Alpha15PlaceLabels(routable);
     v2Alpha29EnsurePageContains(pool);
     return result;
+  };
+
+  /* draw.io attaches text to a connector as a separate child cell: a vertex whose parent is the edge, styled
+     edgeLabel. The importer had no notion of these, so every one became a free-standing 120x60 box - a
+     diagram's worth of "Yes", "No" and route notes scattered as shapes while their connectors imported with
+     no label at all. Hoist the text onto the parent edge before parsing, carrying its offset across. */
+  function v21Alpha19HoistEdgeLabels(text){
+    let doc;
+    try{doc=new DOMParser().parseFromString(text,'application/xml');}catch{return{text,moved:0};}
+    if(!doc||doc.querySelector('parsererror'))return{text,moved:0};
+    let moved=0;
+    for(const model of doc.querySelectorAll('mxGraphModel')){
+      const cells=[...model.querySelectorAll('mxCell')],byId=new Map();
+      for(const cell of cells){
+        const id=cell.getAttribute('id')||cell.parentElement?.getAttribute('id');
+        if(id)byId.set(id,cell);
+      }
+      for(const cell of cells){
+        if(cell.getAttribute('vertex')!=='1')continue;
+        const parent=byId.get(cell.getAttribute('parent')||'');
+        if(!parent||parent.getAttribute('edge')!=='1')continue;
+        const style=cell.getAttribute('style')||'';
+        /* Either explicitly an edgeLabel, or simply a vertex hanging off an edge, which means the same. */
+        if(!/(^|;)edgeLabel\b/.test(style)&&!cell.hasAttribute('connectable'))continue;
+        const wrapper=['object','UserObject'].includes(cell.parentElement?.tagName||'')?cell.parentElement:null;
+        const value=cell.getAttribute('value')||wrapper?.getAttribute('label')||wrapper?.getAttribute('value')||'';
+        if(value){
+          const existing=parent.getAttribute('value')||'';
+          parent.setAttribute('value',existing?`${existing}\n${value}`:value);
+        }
+        const offset=cell.querySelector(':scope > mxGeometry > mxPoint[as="offset"]');
+        if(offset){
+          let geometry=parent.querySelector(':scope > mxGeometry');
+          if(!geometry){
+            geometry=doc.createElement('mxGeometry');
+            geometry.setAttribute('relative','1');geometry.setAttribute('as','geometry');
+            parent.appendChild(geometry);
+          }
+          if(!geometry.querySelector(':scope > mxPoint[as="offset"]'))geometry.appendChild(offset.cloneNode(true));
+        }
+        (wrapper||cell).remove();
+        moved++;
+      }
+    }
+    if(!moved)return{text,moved:0};
+    return{text:new XMLSerializer().serializeToString(doc),moved};
+  }
+  /* An opened file should look like it did in draw.io. Two things stopped that. draw.io draws a connector
+     with no bends as a simple elbow, whereas routePoints sends any waypoint-free connector through the
+     obstacle-aware search, which produced 6 points per connector and detours of up to twice the direct
+     distance. And draw.io attaches connectors at any fraction along a side, while only the four side
+     midpoints survived import. Mark imported connectors so they draw as they were drawn, and keep their
+     attachment fractions. Auto layout clears the mark, since that is the point where re-routing is asked for. */
+  function v21Alpha19PreserveImportedRoutes(){
+    const apply=cells=>{
+      for(const cell of cells||[]){
+        if(!isEdge(cell))continue;
+        if(!(cell.waypoints||[]).length)cell.importedRoute=true;
+        const props=cell.styleProps||{};
+        cell.curved=String(props.curved||'')==='1';
+        const fraction=(port,across,along)=>{
+          const name=normalizePortName(port);
+          if(name==='auto')return 0;
+          const raw=Number(name==='n'||name==='s'?across:along);
+          if(!Number.isFinite(raw))return 0;
+          return clamp(raw-0.5,-0.42,0.42);
+        };
+        const bias={source:fraction(cell.sourcePort,props.exitX,props.exitY),
+          target:fraction(cell.targetPort,props.entryX,props.entryY)};
+        if(bias.source||bias.target)cell.portBias=bias;
+      }
+    };
+    (state.pages||[]).forEach(page=>apply(page.cells));
+    apply(state.cells);
+  }
+  const v21Alpha19BaseImport=importDrawioXml;
+  importDrawioXml=async function(text,filename='Opened.drawio'){
+    const hoisted=v21Alpha19HoistEdgeLabels(String(text||''));
+    const result=await v21Alpha19BaseImport(hoisted.text,filename);
+    v21Alpha19PreserveImportedRoutes();
+    render();
+    return result;
+  };
+  const v21Alpha19BaseRoutePoints=routePoints;
+  routePoints=function(edge,overrides={}){
+    if(edge&&edge.importedRoute&&!(edge.waypoints||[]).length&&overrides.waypoints===undefined)
+      return v2Alpha46BaseRoutePoints(edge,overrides);
+    return v21Alpha19BaseRoutePoints(edge,overrides);
+  };
+
+  /* ================= Curved connectors ================= */
+  /* draw.io's curved=1 smooths an orthogonal route into flowing bends. Nothing here understood it, so those
+     connectors imported as hard elbows and looked nothing like the original. Round each corner with a
+     quadratic through the corner point, cutting back along both arms by the same amount, which is what
+     draw.io draws. Only the corners change - the route itself is untouched, so obstacle avoidance,
+     separation and every other measurement still hold. */
+  /* Rounding each corner separately gives tidy elbows, not the sweep draw.io draws: the short stub leaving a
+     port caps the radius at a few pixels, so the bend stays tight however generous the allowance. Fit a
+     smooth curve through the whole route instead - a Catmull-Rom spline expressed as cubic segments - so a
+     multi-bend route reads as one flowing arc, which is what the original looks like. The points are
+     unchanged, so obstacle clearance and every measurement still hold; only the ink between them curves. */
+  /* Generous, so long runs read as sweeps rather than clipped corners; short port stubs cap themselves. */
+  const V21_ALPHA21_CURVE_RADIUS=90;
+  function v21Alpha21CurvedPath(points){
+    const clean=dedupeRoutePoints(points);
+    if(clean.length<3)return pathFromPoints(clean,false);
+    const round=value=>Math.round(value*100)/100;
+    /* Corner by corner, not a spline through the whole route. A spline was tried in both the uniform and
+       centripetal forms: it gives the sweep, but it leaves the line it is smoothing - up to 46px - and two
+       connectors ended up bowing through shapes their own route cleared. A quadratic drawn across a corner
+       stays inside the triangle of that corner, so it can only ever cut inward. If the route is clear of a
+       shape, the curve is too, which keeps the no-crossing guarantee intact. */
+    let d=`M ${round(clean[0].x)} ${round(clean[0].y)}`;
+    for(let i=1;i<clean.length-1;i++){
+      const previous=clean[i-1],corner=clean[i],next=clean[i+1];
+      const inLength=Math.hypot(corner.x-previous.x,corner.y-previous.y);
+      const outLength=Math.hypot(next.x-corner.x,next.y-corner.y);
+      if(!inLength||!outLength){d+=` L ${round(corner.x)} ${round(corner.y)}`;continue;}
+      const radius=Math.min(V21_ALPHA21_CURVE_RADIUS,inLength/2,outLength/2);
+      if(radius<0.5){d+=` L ${round(corner.x)} ${round(corner.y)}`;continue;}
+      const from={x:corner.x+(previous.x-corner.x)/inLength*radius,y:corner.y+(previous.y-corner.y)/inLength*radius};
+      const to={x:corner.x+(next.x-corner.x)/outLength*radius,y:corner.y+(next.y-corner.y)/outLength*radius};
+      d+=` L ${round(from.x)} ${round(from.y)} Q ${round(corner.x)} ${round(corner.y)} ${round(to.x)} ${round(to.y)}`;
+    }
+    const last=clean[clean.length-1];
+    return`${d} L ${round(last.x)} ${round(last.y)}`;
+  }
+  const v21Alpha21BaseEdgePath=edgePath;
+  edgePath=function(edge,overrides={}){
+    if(!edge?.curved)return v21Alpha21BaseEdgePath(edge,overrides);
+    return v21Alpha21CurvedPath(routePoints(edge,overrides));
+  };
+  const v21Alpha21BaseEnsureEdgeDefaults=ensureEdgeDefaults;
+  ensureEdgeDefaults=function(edge){
+    const result=v21Alpha21BaseEnsureEdgeDefaults(edge);
+    if(edge&&typeof edge.curved!=='boolean')
+      edge.curved=String(edge.styleProps?.curved||'')==='1';
+    return result;
+  };
+  const v21Alpha21BaseBuildXml=buildDrawioXml;
+  buildDrawioXml=function(){
+    const xml=v21Alpha21BaseBuildXml(),curved=new Set();
+    for(const page of [...(state.pages||[]),{cells:state.cells}])
+      for(const cell of page.cells||[])if(isEdge(cell)&&cell.curved)curved.add(cell.id);
+    if(!curved.size)return xml;
+    const doc=new DOMParser().parseFromString(xml,'application/xml');
+    if(doc.querySelector('parsererror'))return xml;
+    for(const node of doc.querySelectorAll('mxCell[edge="1"]')){
+      if(!curved.has(node.getAttribute('id')))continue;
+      let style=node.getAttribute('style')||'';
+      if(/(^|;)curved=/.test(style))style=style.replace(/(^|;)curved=[^;]*/,'$1curved=1');
+      else style=`${style}${style&&!style.endsWith(';')?';':''}curved=1`;
+      node.setAttribute('style',style);
+    }
+    return new XMLSerializer().serializeToString(doc);
   };
 
   const jandoBusyBaseImport=importDrawioXml;
