@@ -16045,7 +16045,7 @@
   function v2Alpha49InstallMore(){
     const top=$('topbar');if(!top||$('v2a49MoreBtn'))return;v2Alpha49MarkTopbarGroups();const button=document.createElement('button');button.id='v2a49MoreBtn';button.type='button';button.title='More toolbar actions';button.setAttribute('aria-label','More toolbar actions');button.textContent='⋯';const dirty=$('dirtyDot');top.insertBefore(button,dirty||$('filename'));
     const menu=document.createElement('div');menu.id='v2a49MoreMenu';document.body.appendChild(menu);button.onclick=e=>{e.preventDefault();e.stopPropagation();v2Alpha49RefreshMore();const r=button.getBoundingClientRect();menu.style.top=`${Math.min(innerHeight-60,r.bottom+5)}px`;menu.style.left=`${Math.max(6,Math.min(innerWidth-260,r.right-254))}px`;menu.classList.toggle('open');};
-    document.addEventListener('pointerdown',e=>{if(!e.target.closest('#v2a49MoreBtn,#v2a49MoreMenu'))v2Alpha49CloseMore();});
+    document.addEventListener('pointerdown',e=>{const t=e.target instanceof Element?e.target:null;if(!t||!t.closest('#v2a49MoreBtn,#v2a49MoreMenu'))v2Alpha49CloseMore();});
   }
   function v2Alpha49QaTopbar(){const top=$('topbar'),filename=$('filename'),dirty=$('dirtyDot'),more=$('v2a49MoreBtn'),r=el=>{const x=el?.getBoundingClientRect();return x?{left:x.left,right:x.right,width:x.width,display:getComputedStyle(el).display}:null};return{viewport:innerWidth,clientWidth:top?.clientWidth||0,scrollWidth:top?.scrollWidth||0,overflow:Boolean(top&&top.scrollWidth>top.clientWidth+1),filename:r(filename),dirty:r(dirty),more:r(more)};}
   function v2Alpha49QaPalette(){const panel=$('diagramPaletteContent');return{scrollHeight:panel?.scrollHeight||0,clientHeight:panel?.clientHeight||0,sections:[...panel?.children||[]].filter(n=>n.matches?.('.palette-section,details')).map(n=>({label:n.querySelector('.palette-label,summary span')?.textContent||'',open:n.tagName==='DETAILS'?n.open:true,height:Math.round(n.getBoundingClientRect().height)}))};}
@@ -17609,7 +17609,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.22';
+  const JANDO_VERSION='2.1.0-alpha.24';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17689,7 +17689,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha22';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha24';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -18021,7 +18021,9 @@
     const segments=[];
     for(const edge of state.cells){
       if(!isEdge(edge))continue;
-      const points=routePoints(edge)||[];
+      /* The drawn line, so a curved connector is judged on where its curve goes rather than on the route
+         underneath it - the curve departs from that route by a corner's worth. */
+      const points=v21Alpha21DrawnPoints(edge,routePoints(edge)||[]);
       for(let i=0;i<points.length-1;i++)segments.push({id:edge.id,a:points[i],b:points[i+1]});
     }
     const placed=[];let clear=0;
@@ -18425,31 +18427,46 @@
      smooth curve through the whole route instead - a Catmull-Rom spline expressed as cubic segments - so a
      multi-bend route reads as one flowing arc, which is what the original looks like. The points are
      unchanged, so obstacle clearance and every measurement still hold; only the ink between them curves. */
-  /* Generous, so long runs read as sweeps rather than clipped corners; short port stubs cap themselves. */
-  const V21_ALPHA21_CURVE_RADIUS=90;
+  /* The line that is actually drawn, as a dense polyline. A curved connector leaves its route by up to a
+     corner's worth, so anything reasoning about where the ink goes - label placement especially - has to
+     measure the curve, not the route it was built from. Mirrors v21Alpha21CurvedPath exactly. */
+  function v21Alpha21DrawnPoints(edge,points){
+    const clean=dedupeRoutePoints(points||[]);
+    if(!edge?.curved||clean.length<3)return clean;
+    const quad=(p0,c,p1,t)=>{const u=1-t;return{
+      x:u*u*p0.x+2*u*t*c.x+t*t*p1.x, y:u*u*p0.y+2*u*t*c.y+t*t*p1.y};};
+    const mid=(a,b)=>({x:(a.x+b.x)/2,y:(a.y+b.y)/2});
+    const out=[clean[0]];
+    let from=clean[0];
+    for(let i=1;i<clean.length-1;i++){
+      const control=clean[i];
+      const to=i===clean.length-2?clean[clean.length-1]:mid(control,clean[i+1]);
+      for(let step=1;step<=6;step++)out.push(quad(from,control,to,step/6));
+      from=to;
+    }
+    return out;
+  }
   function v21Alpha21CurvedPath(points){
     const clean=dedupeRoutePoints(points);
     if(clean.length<3)return pathFromPoints(clean,false);
     const round=value=>Math.round(value*100)/100;
-    /* Corner by corner, not a spline through the whole route. A spline was tried in both the uniform and
-       centripetal forms: it gives the sweep, but it leaves the line it is smoothing - up to 46px - and two
-       connectors ended up bowing through shapes their own route cleared. A quadratic drawn across a corner
-       stays inside the triangle of that corner, so it can only ever cut inward. If the route is clear of a
-       shape, the curve is too, which keeps the no-crossing guarantee intact. */
+    /* This is mxGraph's own curve, which is what draw.io draws: a run of quadratics whose control point is
+       each route vertex and whose ends are the midpoints of the segments either side. The curve therefore
+       leaves the polyline at every corner and only touches it at the midpoints, which is where the long
+       sweeping look comes from.
+       An earlier version rounded each corner within a capped radius. That is a different curve: the cap
+       holds it close to the elbow, so ours read as tight corners next to draw.io's sweeps. The cap is gone.
+       Safety is unchanged, and not by luck - each quadratic lies inside the triangle of its own control
+       point and endpoints, so the curve stays within the corridor the route already cleared. That is the
+       same convex-hull argument as before; what it is not is the free spline tried earlier, which
+       interpolated across corners and bowed out through shapes. */
     let d=`M ${round(clean[0].x)} ${round(clean[0].y)}`;
-    for(let i=1;i<clean.length-1;i++){
-      const previous=clean[i-1],corner=clean[i],next=clean[i+1];
-      const inLength=Math.hypot(corner.x-previous.x,corner.y-previous.y);
-      const outLength=Math.hypot(next.x-corner.x,next.y-corner.y);
-      if(!inLength||!outLength){d+=` L ${round(corner.x)} ${round(corner.y)}`;continue;}
-      const radius=Math.min(V21_ALPHA21_CURVE_RADIUS,inLength/2,outLength/2);
-      if(radius<0.5){d+=` L ${round(corner.x)} ${round(corner.y)}`;continue;}
-      const from={x:corner.x+(previous.x-corner.x)/inLength*radius,y:corner.y+(previous.y-corner.y)/inLength*radius};
-      const to={x:corner.x+(next.x-corner.x)/outLength*radius,y:corner.y+(next.y-corner.y)/outLength*radius};
-      d+=` L ${round(from.x)} ${round(from.y)} Q ${round(corner.x)} ${round(corner.y)} ${round(to.x)} ${round(to.y)}`;
+    for(let i=1;i<clean.length-2;i++){
+      const control=clean[i],next=clean[i+1];
+      d+=` Q ${round(control.x)} ${round(control.y)} ${round((control.x+next.x)/2)} ${round((control.y+next.y)/2)}`;
     }
-    const last=clean[clean.length-1];
-    return`${d} L ${round(last.x)} ${round(last.y)}`;
+    const control=clean[clean.length-2],end=clean[clean.length-1];
+    return`${d} Q ${round(control.x)} ${round(control.y)} ${round(end.x)} ${round(end.y)}`;
   }
   const v21Alpha21BaseEdgePath=edgePath;
   edgePath=function(edge,overrides={}){
@@ -18496,6 +18513,168 @@
   v2Alpha32AutoLayout=function(scopePool=null){
     return jandoWithBusy('Arranging swimlane','Sizing shapes to their text, then routing connectors around them',()=>jandoBusyBaseAutoLayout(scopePool));
   };
+
+  /* ================= Reaching every page in a large document ================= */
+  /* #pageTabs was a plain block with normal white-space, so the tabs - being inline-flex - wrapped onto a
+     fresh row each time they ran out of width. #pageBar is a fixed 34px tall and clips, so on a 28 page
+     document 27 rows of tabs existed in the DOM and none of them could be reached. The bar's overflow-x
+     never helped, because the overflow was vertical. Lay the tabs out in a single non-wrapping row so the
+     horizontal scroll the bar already had does its job.
+     Scrolling dozens of tabs is still poor when the page names are long and share a common prefix, since a
+     prefix alone can fill a 190px tab and every one of them then ellipsises to identical text. Hence a menu
+     that lists the pages at full length. */
+  const v21a23Style=document.createElement('style');v21a23Style.id='v21a23Style';v21a23Style.textContent=`
+    #pageTabs{display:flex;flex-wrap:nowrap;align-items:flex-end;gap:1px;min-width:0}
+    #pageBar{scrollbar-width:thin}
+    #v21a23PageMenuBtn{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;height:26px;margin:0 6px 2px 0;
+      padding:0 8px;border:1px solid var(--line,#d8dde6);border-radius:4px;background:var(--panel,#fff);
+      color:var(--text,#1f2937);font-size:11px;font-weight:650;cursor:pointer;white-space:nowrap}
+    #v21a23PageMenuBtn:hover{border-color:#9eb7ff;background:var(--accent-soft,#eaf0ff);color:#2457c5}
+    #v21a23PageMenuBtn b{font-weight:700;font-size:12px;line-height:1}
+    #v21a23PageMenuBtn span{opacity:.72;font-variant-numeric:tabular-nums}
+    #v21a23PageMenu{position:fixed;z-index:9998;width:min(420px,calc(100vw - 24px));max-height:min(60vh,520px);
+      display:flex;flex-direction:column;border:1px solid var(--line,#d8dde6);border-radius:8px;
+      background:var(--panel,#fff);box-shadow:0 12px 36px rgba(15,23,42,.22);overflow:hidden}
+    #v21a23PageMenu[hidden]{display:none!important}
+    #v21a23PageMenu header{flex:0 0 auto;padding:9px 10px;border-bottom:1px solid var(--line,#d8dde6)}
+    #v21a23PageFilter{width:100%;height:28px;padding:0 8px;border:1px solid var(--line,#d8dde6);border-radius:4px;
+      background:var(--panel-soft,#f7f8fa);color:var(--text,#1f2937);font-size:12px}
+    #v21a23PageFilter:focus{outline:2px solid var(--accent,#246bfd);outline-offset:-1px}
+    #v21a23PageList{flex:1 1 auto;overflow-y:auto;padding:5px}
+    #v21a23PageList button{display:flex;align-items:baseline;gap:8px;width:100%;padding:7px 9px;border:0;
+      border-radius:5px;background:transparent;color:var(--text,#1f2937);font-size:12px;line-height:1.4;
+      text-align:left;cursor:pointer}
+    #v21a23PageList button:hover{background:var(--accent-soft,#eaf0ff)}
+    #v21a23PageList button.current{background:#dceaff;font-weight:700}
+    #v21a23PageList button i{flex:0 0 auto;font-style:normal;opacity:.5;font-size:10px;min-width:20px;
+      font-variant-numeric:tabular-nums}
+    #v21a23PageList button em{font-style:normal;word-break:break-word}
+    #v21a23PageEmpty{padding:12px 10px;color:var(--muted,#667085);font-size:11.5px}
+    html[data-jandostudio-theme="dark"] #v21a23PageMenuBtn{background:#1b2532!important;border-color:#3b485b!important;color:#dfe6f0!important}
+    html[data-jandostudio-theme="dark"] #v21a23PageMenu{background:#18222f!important;border-color:#3b485b!important}
+    html[data-jandostudio-theme="dark"] #v21a23PageMenu header{border-color:#3b485b!important}
+    html[data-jandostudio-theme="dark"] #v21a23PageFilter{background:#141c26!important;border-color:#3b485b!important;color:#e7edf6!important}
+    html[data-jandostudio-theme="dark"] #v21a23PageList button{color:#dce5f1!important}
+    html[data-jandostudio-theme="dark"] #v21a23PageList button:hover{background:#223044!important}
+    html[data-jandostudio-theme="dark"] #v21a23PageList button.current{background:#21467b!important;color:#fff!important}
+  `;document.head.appendChild(v21a23Style);
+
+  let v21a23MenuOpen=false;
+  function v21a23Tabs(){return[...document.querySelectorAll('.page-tab[data-page-id]')];}
+  function v21a23PageEntries(){
+    /* Read the tabs rather than state.pages: they are the rendered truth, they carry the page id, and
+       clicking one reuses whatever switching behaviour is already wired up. */
+    return v21a23Tabs().map((tab,index)=>({
+      index,id:tab.dataset.pageId,tab,
+      name:(tab.querySelector('span')?.textContent||tab.textContent||'').replace(/×\s*$/,'').trim()||`Page ${index+1}`,
+      current:tab.classList.contains('active')
+    }));
+  }
+  function v21a23Menu(){
+    let menu=$('v21a23PageMenu');
+    if(menu)return menu;
+    menu=document.createElement('div');menu.id='v21a23PageMenu';menu.hidden=true;
+    menu.setAttribute('role','dialog');menu.setAttribute('aria-label','Pages');
+    menu.innerHTML='<header><input id="v21a23PageFilter" type="search" placeholder="Filter pages" autocomplete="off" spellcheck="false"></header><div id="v21a23PageList"></div>';
+    document.body.appendChild(menu);
+    menu.querySelector('#v21a23PageFilter').addEventListener('input',()=>v21a23FillMenu());
+    menu.addEventListener('keydown',event=>{
+      if(event.key==='Enter'&&event.target.id==='v21a23PageFilter'){
+        const first=menu.querySelector('#v21a23PageList button');
+        if(first){event.preventDefault();first.click();}
+      }
+    });
+    return menu;
+  }
+  function v21a23FillMenu(){
+    const menu=v21a23Menu(),list=menu.querySelector('#v21a23PageList');
+    const term=(menu.querySelector('#v21a23PageFilter')?.value||'').trim().toLowerCase();
+    const entries=v21a23PageEntries().filter(entry=>!term||entry.name.toLowerCase().includes(term));
+    list.textContent='';
+    if(!entries.length){
+      const empty=document.createElement('div');empty.id='v21a23PageEmpty';
+      empty.textContent='No page matches that filter.';list.appendChild(empty);return;
+    }
+    for(const entry of entries){
+      const row=document.createElement('button');
+      row.type='button';row.className=entry.current?'current':'';
+      if(entry.current)row.setAttribute('aria-current','true');
+      const number=document.createElement('i');number.textContent=String(entry.index+1);
+      const label=document.createElement('em');label.textContent=entry.name;
+      row.append(number,label);
+      row.onclick=()=>{v21a23CloseMenu();entry.tab.click();entry.tab.scrollIntoView({block:'nearest',inline:'center'});};
+      list.appendChild(row);
+    }
+  }
+  function v21a23PositionMenu(){
+    const button=$('v21a23PageMenuBtn'),menu=$('v21a23PageMenu');
+    if(!button||!menu)return;
+    const rect=button.getBoundingClientRect();
+    menu.style.top=`${Math.round(rect.bottom+6)}px`;
+    menu.style.left=`${Math.round(Math.min(rect.left,Math.max(12,window.innerWidth-menu.offsetWidth-12)))}px`;
+  }
+  function v21a23OpenMenu(){
+    const menu=v21a23Menu();
+    v21a23FillMenu();menu.hidden=false;v21a23MenuOpen=true;
+    $('v21a23PageMenuBtn')?.setAttribute('aria-expanded','true');
+    v21a23PositionMenu();
+    const filter=menu.querySelector('#v21a23PageFilter');
+    if(filter){filter.value='';v21a23FillMenu();filter.focus();}
+    menu.querySelector('.current')?.scrollIntoView({block:'nearest'});
+  }
+  function v21a23CloseMenu(){
+    const menu=$('v21a23PageMenu');
+    if(menu)menu.hidden=true;
+    v21a23MenuOpen=false;
+    $('v21a23PageMenuBtn')?.setAttribute('aria-expanded','false');
+  }
+  function v21a23InstallButton(){
+    const bar=$('pageBar'),tabs=$('pageTabs');
+    if(!bar||!tabs||$('v21a23PageMenuBtn'))return;
+    const button=document.createElement('button');
+    button.id='v21a23PageMenuBtn';button.type='button';
+    button.title='All pages';button.setAttribute('aria-haspopup','dialog');button.setAttribute('aria-expanded','false');
+    button.innerHTML='<b>☰</b><span></span>';
+    button.onclick=event=>{event.stopPropagation();v21a23MenuOpen?v21a23CloseMenu():v21a23OpenMenu();};
+    bar.insertBefore(button,tabs);
+  }
+  function v21a23SyncButton(){
+    v21a23InstallButton();
+    const button=$('v21a23PageMenuBtn');
+    if(!button)return;
+    const count=v21a23Tabs().length;
+    button.querySelector('span').textContent=String(count);
+    button.title=`All pages (${count})`;
+    if(v21a23MenuOpen)v21a23FillMenu();
+  }
+  document.addEventListener('pointerdown',event=>{
+    if(!v21a23MenuOpen)return;
+    /* Not every pointerdown target is an Element - the document itself has no closest() - and letting that
+       throw here kills the handler, leaving the menu stuck open. */
+    const target=event.target instanceof Element?event.target:null;
+    if(target&&(target.closest('#v21a23PageMenu')||target.closest('#v21a23PageMenuBtn')))return;
+    v21a23CloseMenu();
+  },true);
+  window.addEventListener('resize',()=>{if(v21a23MenuOpen)v21a23PositionMenu();});
+  /* Escape is owned by v119SafeEscape, a capture listener on window that stops immediate propagation for
+     every Escape, so a listener on the menu itself never runs. Take that registration over and give the page
+     menu first refusal, then hand the key on so every existing Escape behaviour is unchanged. */
+  if(typeof v119SafeEscape==='function'){
+    window.removeEventListener('keydown',v119SafeEscape,true);
+    window.addEventListener('keydown',event=>{
+      if(event.key==='Escape'&&v21a23MenuOpen){
+        event.preventDefault();event.stopImmediatePropagation();
+        v21a23CloseMenu();$('v21a23PageMenuBtn')?.focus();return;
+      }
+      v119SafeEscape(event);
+    },true);
+  }
+  const v21a23BaseRenderPages=v18RenderPages;
+  v18RenderPages=function(){const result=v21a23BaseRenderPages.apply(this,arguments);v21a23SyncButton();return result;};
+  v21a23SyncButton();
+  window.JandoStudio.pageMenu={open:v21a23OpenMenu,close:v21a23CloseMenu,
+    entries:()=>v21a23PageEntries().map(entry=>({index:entry.index,name:entry.name,current:entry.current}))};
+
   render();
 
 })();
