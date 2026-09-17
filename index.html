@@ -7474,7 +7474,8 @@
         lanes: sorted.map((lane, index) => ({
           id: lane.id,
           name: stripHtmlLabel(lane.value) || `Lane ${index + 1}`,
-          size: orientation === 'vertical' ? (lane.geom.w || width / sorted.length) : (lane.geom.h || height / sorted.length),
+          /* Measured from the lane's own offset, not its own length - see v21Alpha32LaneSpan. */
+          size: v21Alpha32LaneSpan(sorted, index, orientation, width, height),
           fill: lane.element.getAttribute('localLaneFill') || readStyleColor(lane.styleProps, 'fillColor', null),
           collapsed: lane.element.getAttribute('collapsed') === '1',
           hidden: lane.element.getAttribute('localLaneHidden') === '1',
@@ -15635,7 +15636,7 @@
     if(!source||!target)return connectorPath(start,end,'orthogonal',false,sourcePort,targetPort);
     const routed=v2Alpha46RouteBetween(source,target,start,end,sourcePort,targetPort,edge?.id||null);return pathFromPoints(routed?.path||defaultRoutePoints(start,end,'orthogonal',sourcePort,targetPort),false);
   }
-  function v2Alpha46AutoRouteEdge(edge){if(!edge||!isEdge(edge)||isFullyLocked(edge))return false;edge.route='orthogonal';edge.waypoints=[];edge.importedRoute=false;v2Alpha46RouteCache.delete(edge);return true;}
+  function v2Alpha46AutoRouteEdge(edge){if(!edge||!isEdge(edge)||isFullyLocked(edge))return false;edge.route='orthogonal';edge.waypoints=[];edge.importedRoute=false;edge.importedHints=false;v2Alpha46RouteCache.delete(edge);return true;}
 
   const v2Alpha46BaseRenderEdgeProperties=renderEdgeProperties;
   renderEdgeProperties=function(cell){
@@ -17403,6 +17404,9 @@
   function v21Alpha12FanPorts(edges){
     const groups=new Map();
     for(const edge of edges){
+      /* A connector that has been set up to run straight keeps its attachment points: spreading them along
+         the side is exactly what would put the bend back. */
+      if(edge.straightRun)continue;
       edge.portBias={source:0,target:0};
       for(const end of ['source','target']){
         const port=normalizePortName(end==='source'?edge.sourcePort:edge.targetPort);
@@ -17433,12 +17437,67 @@
       });
     }
   }
+  /* A connector between two shapes with clear space between them should be one straight line, and often
+     was not: the sides were picked for the general case, so a pair sitting level with each other would be
+     entered from above and jog on the way in. Measured after arrange, 75 of 291 connectors bent where a
+     clear straight corridor existed.
+     Look for that corridor first. If there is one, use the facing sides and nudge both attachment points
+     onto the same line - which is what the port offset already does - so the connector comes out straight. */
+  function v21Alpha32StraightRun(source,target){
+    const obstacles=v2Alpha46VisibleRoutingCells(source,target)
+      .map(cell=>({x:cell.x,y:cell.y,w:cell.w,h:cell.h}));
+    const clear=(a,b)=>!obstacles.some(rect=>v2Alpha44SegmentHitsRect(a,b,rect));
+    const bias=(value,centre,size)=>clamp((value-centre)/Math.max(1,size),-0.4,0.4);
+    const rightward=target.x>source.x+source.w,leftward=source.x>target.x+target.w;
+    if(rightward||leftward){
+      const low=Math.max(source.y,target.y)+10,high=Math.min(source.y+source.h,target.y+target.h)-10;
+      if(high>low){
+        const centre=(low+high)/2,tries=[centre];
+        for(let y=low;y<=high;y+=8)tries.push(y);
+        for(const y of tries){
+          const a={x:rightward?source.x+source.w:target.x,y};
+          const b={x:rightward?target.x:source.x+source.w,y};
+          if(!clear(a,b))continue;
+          return{sourcePort:rightward?'e':'w',targetPort:rightward?'w':'e',
+            sourceBias:bias(y,source.y+source.h/2,source.h),
+            targetBias:bias(y,target.y+target.h/2,target.h)};
+        }
+      }
+    }
+    const downward=target.y>source.y+source.h,upward=source.y>target.y+target.h;
+    if(downward||upward){
+      const low=Math.max(source.x,target.x)+10,high=Math.min(source.x+source.w,target.x+target.w)-10;
+      if(high>low){
+        const centre=(low+high)/2,tries=[centre];
+        for(let x=low;x<=high;x+=8)tries.push(x);
+        for(const x of tries){
+          const a={x,y:downward?source.y+source.h:target.y};
+          const b={x,y:downward?target.y:source.y+source.h};
+          if(!clear(a,b))continue;
+          return{sourcePort:downward?'s':'n',targetPort:downward?'n':'s',
+            sourceBias:bias(x,source.x+source.w/2,source.w),
+            targetBias:bias(x,target.x+target.w/2,target.w)};
+        }
+      }
+    }
+    return null;
+  }
   function v21Alpha12AssignPorts(edge,pool,metrics){
     const source=getCell(edge.source),target=getCell(edge.target);
     if(!source||!target)return false;
+    edge.route='orthogonal';edge.waypoints=[];
+    edge.importedRoute=false;edge.importedHints=false;v2Alpha46RouteCache.delete(edge);
+    const straight=v21Alpha32StraightRun(source,target);
+    if(straight){
+      edge.sourcePort=straight.sourcePort;edge.targetPort=straight.targetPort;
+      edge.portBias={source:straight.sourceBias,target:straight.targetBias};
+      edge.straightRun=true;
+      return true;
+    }
+    edge.straightRun=false;
     const [sourcePort,targetPort]=v21Alpha12ChoosePorts(source,target,pool,metrics);
-    edge.route='orthogonal';edge.sourcePort=sourcePort;edge.targetPort=targetPort;edge.waypoints=[];
-    edge.portBias={source:0,target:0};edge.importedRoute=false;v2Alpha46RouteCache.delete(edge);
+    edge.sourcePort=sourcePort;edge.targetPort=targetPort;
+    edge.portBias={source:0,target:0};
     return true;
   }
   function v21Alpha12RouteArranged(edge,pool,metrics){
@@ -17504,7 +17563,13 @@
     const obstacleCache=new Map();
     const obstaclesFor=entry=>{
       if(!obstacleCache.has(entry.edge.id))
-        obstacleCache.set(entry.edge.id,v2Alpha46VisibleRoutingCells(entry.source,entry.target).map(cell=>v2Alpha44ExpandedRect(cell,10)));
+        /* The connector's own two shapes belong in this list. VisibleRoutingCells leaves them out, so a
+           segment could be nudged sideways into the very shape it starts from and nothing objected - which
+           is exactly how a connector ended up running back through its own source. */
+        obstacleCache.set(entry.edge.id,[
+          ...v2Alpha46VisibleRoutingCells(entry.source,entry.target).map(cell=>v2Alpha44ExpandedRect(cell,10)),
+          {x:entry.source.x,y:entry.source.y,w:entry.source.w,h:entry.source.h,id:entry.source.id},
+          {x:entry.target.x,y:entry.target.y,w:entry.target.w,h:entry.target.h,id:entry.target.id}]);
       return obstacleCache.get(entry.edge.id);
     };
     const segments=[];
@@ -17609,7 +17674,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.25';
+  const JANDO_VERSION='2.1.0-alpha.32';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17689,7 +17754,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha25';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha32';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -17791,6 +17856,13 @@
     return v21Alpha22BaseScaleLaneSizes(cell,newDimension);
   };
 
+  window.JandoStudio.debugDropImportedRoutes=()=>{
+    let n=0;
+    for(const page of [...(state.pages||[]),{cells:state.cells}])
+      for(const cell of page.cells||[])
+        if(isEdge(cell)&&cell.importedRoute){cell.importedRoute=false;cell.importedHints=false;v2Alpha46RouteCache.delete(cell);n++;}
+    render();return n;
+  };
   window.JandoStudio.debugLaneResize=(index,delta)=>{
     const pool=state.cells.find(cell=>isVertex(cell)&&cell.shape==='swimlane');
     if(!pool||!pool.lanes[index+1])return null;
@@ -17936,6 +18008,10 @@
   /* Making labels legible was only half the job: a 260px label still lands wherever the connector's midpoint
      happens to be, which on this document meant 15 of 19 labels sitting on top of a shape. Widen the gaps
      between columns, give each lane vertical slack, then search for a clear spot for every label. */
+  /* Measured three settings across the whole document. Nothing dominates and it is not monotonic: 90/90 is
+     narrower with far less overlap but more crossings, and 115/105 was worse than both and actually put
+     connectors back through shapes. 150/130 is the only one that holds the no-crossing rule at the best
+     crossing count, so it stays until spacing becomes adaptive rather than uniform. */
   const V21_ALPHA15_COLUMN_GAP=150,V21_ALPHA15_LANE_PADDING=130;
   /* Measured on a 47-shape, 58-connector, 9-lane flow: channels alone took crossings 60 -> 58 and a heavier crossing charge alone
      took 60 -> 59, because neither helps without the other - the charge needs somewhere to go, and the
@@ -18014,7 +18090,9 @@
     }
     return path[0];
   }
-  function v21Alpha15PlaceLabels(edges){
+  /* reserved: label boxes that are staying put, so a label being moved does not land on one of them. The
+     import tidy moves only the labels that actually collide and hands the rest over as reserved. */
+  function v21Alpha15PlaceLabels(edges,reserved=[]){
     const shapes=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane');
     const labelled=edges.filter(edge=>edge.label&&!isFullyLocked(edge));
     if(!labelled.length)return 0;
@@ -18026,7 +18104,7 @@
       const points=v21Alpha21DrawnPoints(edge,routePoints(edge)||[]);
       for(let i=0;i<points.length-1;i++)segments.push({id:edge.id,a:points[i],b:points[i+1]});
     }
-    const placed=[];let clear=0;
+    const placed=[...reserved];let clear=0;
     for(const edge of labelled){
       edge.labelOffset={x:0,y:0};
       const path=routePoints(edge)||[];
@@ -18037,8 +18115,14 @@
         total+=Math.abs(path[i+1].x-path[i].x)+Math.abs(path[i+1].y-path[i].y);acc.push(total);
       }
       if(!total)continue;
+      /* The wide ring is a last resort. Nothing beyond the first few ever wins on its own, because score
+         counts distance from the connector, but two labels ended up exactly on top of each other when every
+         near position was taken and there was nothing further out to fall back to. */
       const offsets=[[0,0],[0,-(box.h/2+12)],[0,box.h/2+12],[0,-(box.h+24)],[0,box.h+24],
-        [-(box.w/2+16),0],[box.w/2+16,0],[0,-(box.h*1.5+34)],[0,box.h*1.5+34]];
+        [-(box.w/2+16),0],[box.w/2+16,0],[0,-(box.h*1.5+34)],[0,box.h*1.5+34],
+        [-(box.w/2+16),-(box.h+24)],[box.w/2+16,-(box.h+24)],
+        [-(box.w/2+16),box.h+24],[box.w/2+16,box.h+24],
+        [0,-(box.h*2.5+52)],[0,box.h*2.5+52],[-(box.w+36),0],[box.w+36,0]];
       let best=null;
       for(const t of [0.5,0.42,0.58,0.34,0.66,0.26,0.74]){
         const anchor=v21Alpha15PointAt(path,acc,total,t);
@@ -18294,8 +18378,11 @@
     if(pool){
       const inside=new Set(state.cells.filter(cell=>isVertex(cell)&&cell.containerId===pool.id).map(cell=>cell.id));
       for(const cell of state.cells){
-        if(isEdge(cell)&&inside.has(cell.source)&&inside.has(cell.target)){
-          cell.importedRoute=false;v2Alpha46RouteCache.delete(cell);
+        /* Either end is enough. A connector with only one end in this pool is not re-routed here, but that
+           end is about to move, and bends recorded against where it used to be then fold the line back over
+           its own shape. */
+        if(isEdge(cell)&&(inside.has(cell.source)||inside.has(cell.target))){
+          cell.importedRoute=false;cell.importedHints=false;v2Alpha46RouteCache.delete(cell);
         }
       }
     }
@@ -18384,6 +18471,7 @@
       for(const cell of cells||[]){
         if(!isEdge(cell))continue;
         if(!(cell.waypoints||[]).length)cell.importedRoute=true;
+        else cell.importedHints=true;   // bends that came from the file, routed by SegmentConnector
         const props=cell.styleProps||{};
         cell.curved=String(props.curved||'')==='1';
         const fraction=(port,across,along)=>{
@@ -18451,21 +18539,489 @@
     if(!moved)return{text,moved:0};
     return{text:new XMLSerializer().serializeToString(doc),moved};
   }
+  /* draw.io's shape libraries name things like mxgraph.flowchart.decision. The importer only recognised the
+     base style names, so anything drawn from a library fell through to a grey rectangle carrying a
+     "draw.io shape" badge - on one 28 page document that was 52 shapes, every decision and terminator in
+     the file, despite both having exact equivalents here.
+     Map them by adding a localShape hint rather than rewriting the style: styleShape reads that hint first,
+     and the original library name stays in the file so a save still round-trips as draw.io wrote it. */
+  const V21A29_LIBRARY_SHAPES={
+    decision:'diamond',
+    terminator:'terminator',start_1:'terminator',start_2:'terminator',start:'terminator',end:'terminator',
+    process:'rounded',predefined_process:'predefined',
+    document:'document','multi-document':'documents','multi_document':'documents',
+    data:'data',
+    database:'database',direct_data:'database',stored_data:'database',internal_storage:'database',
+    manual_input:'manual',manual_operation:'manual',
+    delay:'delay',
+    'off-page_reference':'offpage','on-page_reference':'offpage',
+    annotation_1:'note',annotation_2:'note'
+  };
+  function v21Alpha29MapLibraryShapes(text){
+    let doc;
+    try{doc=new DOMParser().parseFromString(text,'application/xml');}catch{return{text,moved:0};}
+    if(!doc||doc.querySelector('parsererror'))return{text,moved:0};
+    let moved=0;
+    for(const cell of doc.querySelectorAll('mxCell[vertex="1"]')){
+      const style=cell.getAttribute('style')||'';
+      if(!style||/(^|;)localShape=/.test(style))continue;
+      const match=/(?:^|;)shape=([^;]+)/.exec(style);
+      if(!match)continue;
+      const name=match[1].trim().toLowerCase();
+      if(!name.startsWith('mxgraph.'))continue;
+      const mapped=V21A29_LIBRARY_SHAPES[name.split('.').pop()];
+      if(!mapped)continue;   // genuinely unsupported: leave it to show as a fallback, which is honest
+      cell.setAttribute('style',`${style}${style.endsWith(';')?'':';'}localShape=${mapped};`);
+      moved++;
+    }
+    if(!moved)return{text,moved:0};
+    return{text:new XMLSerializer().serializeToString(doc),moved};
+  }
+  /* Shapes that belong to no pool are invisible to Auto layout, which only walks a pool's own children, so
+     they keep their imported position while everything around them is rearranged - and their connectors with
+     them. That was the whole of the remaining overlap: on a 28 page document the only pages that still had
+     connectors crossing shapes after arrange were the three carrying orphaned shapes.
+     Most are already sitting inside a pool and were simply never assigned to it. The rest sit outside
+     altogether; those are adopted by the nearest pool so the layout can bring them in. */
+  function v21Alpha30AdoptOrphans(cells){
+    const pools=(cells||[]).filter(cell=>isVertex(cell)&&cell.shape==='swimlane');
+    if(!pools.length)return 0;
+    const poolIds=new Set(pools.map(pool=>pool.id));
+    let adopted=0;
+    for(const cell of cells){
+      if(!isVertex(cell)||cell.shape==='swimlane')continue;
+      if(cell.containerId&&poolIds.has(cell.containerId))continue;
+      if(cell.parentGroupId)continue;   // owned by a group, not loose on the page
+      const cx=cell.x+cell.w/2,cy=cell.y+cell.h/2;
+      let host=pools.find(pool=>cx>=pool.x&&cx<=pool.x+pool.w&&cy>=pool.y&&cy<=pool.y+pool.h);
+      if(!host){
+        let best=null;
+        for(const pool of pools){
+          const dx=Math.max(pool.x-cx,0,cx-(pool.x+pool.w));
+          const dy=Math.max(pool.y-cy,0,cy-(pool.y+pool.h));
+          const distance=Math.hypot(dx,dy);
+          if(!best||distance<best.distance)best={distance,pool};
+        }
+        host=best?.pool;
+      }
+      if(!host)continue;
+      ensureSwimlaneDefaults(host);
+      const horizontal=host.orientation!=='vertical';
+      const along=horizontal?cy:cx;
+      let cursor=horizontal?host.y:host.x,laneId=host.lanes[0]?.id,bestGap=Infinity;
+      for(const lane of host.lanes){
+        const low=cursor,high=cursor+Number(lane.size);
+        cursor=high;
+        if(along>=low&&along<=high){laneId=lane.id;bestGap=0;break;}
+        const gap=along<low?low-along:along-high;
+        if(gap<bestGap){bestGap=gap;laneId=lane.id;}
+      }
+      cell.containerId=host.id;cell.laneId=laneId;adopted++;
+    }
+    return adopted;
+  }
   const v21Alpha19BaseImport=importDrawioXml;
   importDrawioXml=async function(text,filename='Opened.drawio'){
-    const flattened=v21Alpha25FlattenNestedLanes(String(text||''));
+    const mapped=v21Alpha29MapLibraryShapes(String(text||''));
+    const flattened=v21Alpha25FlattenNestedLanes(mapped.text);
     const hoisted=v21Alpha19HoistEdgeLabels(flattened.text);
     const result=await v21Alpha19BaseImport(hoisted.text,filename);
+    (state.pages||[]).forEach(page=>v21Alpha30AdoptOrphans(page.cells));
+    v21Alpha30AdoptOrphans(state.cells);
     v21Alpha19PreserveImportedRoutes();
     render();
     return result;
   };
   const v21Alpha19BaseRoutePoints=routePoints;
   routePoints=function(edge,overrides={}){
-    if(edge&&edge.importedRoute&&!(edge.waypoints||[]).length&&overrides.waypoints===undefined)
+    if(edge&&edge.importedRoute&&!(edge.waypoints||[]).length&&overrides.waypoints===undefined){
+      /* Route an imported connector the way draw.io does. Falls through to the previous behaviour whenever
+         OrthConnector declines - too short for its jetties, or no pattern for that geometry - which is the
+         same set of cases mxGraph hands to SegmentConnector. */
+      const source=getCell(edge.source),target=getCell(edge.target);
+      const ends=edgeEndpoints(edge);
+      if(source&&target&&ends?.start&&ends?.end){
+        const middle=v21Alpha27OrthConnector(edge,source,target,ends.start,ends.end);
+        if(middle)return dedupeRoutePoints([ends.start,...middle,ends.end]);
+      }
       return v2Alpha46BaseRoutePoints(edge,overrides);
+    }
     return v21Alpha19BaseRoutePoints(edge,overrides);
   };
+
+  /* draw.io stores a bend as a point the connector must pass through, not as a corner to join straight to.
+     With edgeStyle=orthogonalEdgeStyle - which every connector in these files uses - it then routes between
+     those points at right angles. We were joining them directly, so any connector carrying a stored bend
+     came out with diagonal legs that draw.io never draws. On one 28 page document that was every single one
+     of the 21 connectors with stored bends, 41 diagonal segments in all.
+     Re-route through the same points at right angles. Where consecutive points already share an axis this
+     changes nothing, so routes we generate ourselves are untouched. */
+  function v21Alpha26OrthogonalThrough(points,sourcePort,targetPort,obstacles,bounds){
+    const pts=dedupeRoutePoints(points||[]);
+    if(pts.length<3)return pts;
+    const source=normalizePortName(sourcePort),target=normalizePortName(targetPort);
+    const blocked=(a,b)=>!!obstacles&&obstacles.some(rect=>v2Alpha44SegmentHitsRect(a,b,rect));
+    const out=[pts[0]];
+    let horizontal=source==='e'||source==='w';
+    if(source==='auto'){
+      const next=pts[1];
+      horizontal=Math.abs(next.x-pts[0].x)>=Math.abs(next.y-pts[0].y);
+    }
+    for(let i=1;i<pts.length;i++){
+      const previous=out[out.length-1],next=pts[i];
+      const dx=Math.abs(next.x-previous.x),dy=Math.abs(next.y-previous.y);
+      if(dx<0.5||dy<0.5){
+        out.push(next);
+        if(dx>=0.5)horizontal=true;else if(dy>=0.5)horizontal=false;
+        continue;
+      }
+      /* The last leg has to arrive along the target's own side, otherwise the connector meets the shape
+         from a direction its arrowhead is not pointing. */
+      const last=i===pts.length-1&&target!=='auto';
+      let goHorizontalFirst=last?(target==='n'||target==='s'):horizontal;
+      /* A straight leg can pass a shape that the right-angled version of it runs into, so where the
+         preferred corner is blocked and the other one is not, take the other one. This applies to the final
+         leg too: arriving along the target's own side is only worth having if the approach does not cross
+         the target on its way in, which was the larger half of the crossings this rule introduced. */
+      const preferredPoint=goHorizontalFirst?{x:next.x,y:previous.y}:{x:previous.x,y:next.y};
+      const alternatePoint=goHorizontalFirst?{x:previous.x,y:next.y}:{x:next.x,y:previous.y};
+      const hits=pt=>blocked(previous,pt)||blocked(pt,next);
+      if(hits(preferredPoint)&&!hits(alternatePoint))goHorizontalFirst=!goHorizontalFirst;
+      else if(hits(preferredPoint)&&hits(alternatePoint)&&obstacles&&bounds){
+        /* Both right angles run into something - typical when the point to reach is on the far side of a
+           shape, so either way in crosses it. A single corner cannot express that leg; ask the router that
+           already knows how to go around things. */
+        const detour=v2Alpha44RouteGrid(previous,next,obstacles,bounds,[],[]);
+        if(detour&&detour.length>2){
+          for(const point of detour.slice(1))out.push(point);
+          const tail=out[out.length-1],prior=out[out.length-2];
+          horizontal=prior?Math.abs(tail.y-prior.y)<0.5:horizontal;
+          continue;
+        }
+      }
+      out.push(goHorizontalFirst?{x:next.x,y:previous.y}:{x:previous.x,y:next.y},next);
+      horizontal=!goHorizontalFirst;
+    }
+    return dedupeRoutePoints(out);
+  }
+  const v21Alpha26BaseRoutePoints=routePoints;
+  routePoints=function(edge,overrides={}){
+    const points=v21Alpha26BaseRoutePoints(edge,overrides);
+    if(!edge||edge.route!=='orthogonal'||!Array.isArray(points)||points.length<3)return points;
+    const waypoints=overrides.waypoints!==undefined?overrides.waypoints:edge.waypoints;
+    if(!Array.isArray(waypoints)||!waypoints.length)return points;
+    const source=getCell(edge.source),target=getCell(edge.target);
+    /* Bends that came from a file get draw.io's own SegmentConnector. Everything else - routes this app
+       computed - is already orthogonal and is left alone. */
+    if(edge.importedHints&&source&&target&&overrides.waypoints===undefined){
+      const ends=edgeEndpoints(edge);
+      if(ends?.start&&ends?.end){
+        const middle=v21Alpha28SegmentConnector(source,target,ends.start,ends.end,waypoints);
+        if(middle)return dedupeRoutePoints([ends.start,...middle,ends.end]);
+      }
+    }
+    /* Include the connector's own two shapes at their exact bounds. VisibleRoutingCells leaves them out,
+       and they were most of what these corners were running through - a leg turning into the target's far
+       side crosses the target to reach its port. A stub sitting on the boundary does not register. */
+    const obstacles=source&&target
+      ?[...v2Alpha46VisibleRoutingCells(source,target).map(cell=>v2Alpha44ExpandedRect(cell,6)),
+        {x:source.x,y:source.y,w:source.w,h:source.h,id:source.id},
+        {x:target.x,y:target.y,w:target.w,h:target.h,id:target.id}]
+      :null;
+    const bounds={x:-200,y:-200,
+      w:Math.max(400,(state.page?.width||2000)+400),h:Math.max(400,(state.page?.height||2000)+400)};
+    return v21Alpha26OrthogonalThrough(points,
+      overrides.sourcePort??edge.sourcePort,overrides.targetPort??edge.targetPort,obstacles,bounds);
+  };
+
+  /* ================= mxEdgeStyle.OrthConnector ================= */
+  /* A direct port of the routing draw.io actually uses for edgeStyle=orthogonalEdgeStyle, taken from the
+     mxGraph source rather than reconstructed, because the route patterns below are bit-encoded direction
+     sequences where a single wrong constant gives subtly wrong routes that are hard to spot. Note SOUTH is
+     4 and EAST is 8, which is the opposite way round from the obvious guess.
+     mxGraph only uses this when an edge carries no bend points of its own; with bends it falls back to
+     SegmentConnector, so this is applied on the same condition. */
+  const V21A27={MASK_W:1,MASK_N:2,MASK_S:4,MASK_E:8,MASK_ALL:15,
+    ORTH_BUFFER:10,DEFAULT_MARKERSIZE:6,
+    SIDE_MASK:480,CENTER_MASK:512,SOURCE_MASK:1024,TARGET_MASK:2048,
+    DIR_VECTORS:[[-1,0],[0,-1],[1,0],[0,1],[-1,0],[0,-1],[1,0]],
+    ROUTE_PATTERNS:[
+      [[513,2308,2081,2562],[513,1090,514,2184,2114,2561],
+        [513,1090,514,2564,2184,2562],
+        [513,2308,2561,1090,514,2568,2308]],
+      [[514,1057,513,2308,2081,2562],[514,2184,2114,2561],
+        [514,2184,2562,1057,513,2564,2184],
+        [514,1057,513,2568,2308,2561]],
+      [[1090,514,1057,513,2308,2081,2562],[2114,2561],
+        [1090,2562,1057,513,2564,2184],
+        [1090,514,1057,513,2308,2561,2568]],
+      [[2081,2562],[1057,513,1090,514,2184,2114,2561],
+        [1057,513,1090,514,2184,2562,2564],
+        [1057,2561,1090,514,2568,2308]]]};
+  function v21Alpha27ReversePortConstraints(constraint){
+    let result=(constraint&V21A27.MASK_W)<<3;
+    result|=(constraint&V21A27.MASK_N)<<1;
+    result|=(constraint&V21A27.MASK_S)>>1;
+    result|=(constraint&V21A27.MASK_E)>>3;
+    return result;
+  }
+  function v21Alpha27JettySize(edge,isSource){
+    const props=edge?.styleProps||{};
+    let value=props[isSource?'sourceJettySize':'targetJettySize'];
+    if(value===undefined||value===null||value==='')value=props.jettySize;
+    if(value===undefined||value===null||value==='')value=V21A27.ORTH_BUFFER;
+    if(value==='auto'){
+      const arrow=isSource?edge.startArrow:edge.endArrow;
+      if(arrow&&arrow!=='none'){
+        const size=Number(props[isSource?'startSize':'endSize'])||V21A27.DEFAULT_MARKERSIZE;
+        value=Math.max(2,Math.ceil((size+V21A27.ORTH_BUFFER)/V21A27.ORTH_BUFFER))*V21A27.ORTH_BUFFER;
+      }else value=2*V21A27.ORTH_BUFFER;
+    }
+    const numeric=Number(value);
+    return Number.isFinite(numeric)?numeric:V21A27.ORTH_BUFFER;
+  }
+  function v21Alpha27OrthConnector(edge,source,target,p0,pe){
+    if(!source||!target||!p0||!pe)return null;
+    const C=V21A27;
+    const sourceBuffer=v21Alpha27JettySize(edge,true);
+    const targetBuffer=v21Alpha27JettySize(edge,false);
+    const totalBuffer=targetBuffer+sourceBuffer;
+    /* Too close together for the jetties to fit: mxGraph hands these to SegmentConnector. */
+    const ddx=pe.x-p0.x,ddy=pe.y-p0.y;
+    if(ddx*ddx+ddy*ddy<totalBuffer*totalBuffer)return null;
+    const geo=[[source.x,source.y,source.w,source.h],[target.x,target.y,target.w,target.h]];
+    const buffer=[sourceBuffer,targetBuffer];
+    const limits=[[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]];
+    for(let i=0;i<2;i++){
+      limits[i][1]=geo[i][0]-buffer[i];
+      limits[i][2]=geo[i][1]-buffer[i];
+      limits[i][4]=geo[i][0]+geo[i][2]+buffer[i];
+      limits[i][8]=geo[i][1]+geo[i][3]+buffer[i];
+    }
+    const dx=(geo[0][0]+geo[0][2]/2)-(geo[1][0]+geo[1][2]/2);
+    const dy=(geo[0][1]+geo[0][3]/2)-(geo[1][1]+geo[1][3]/2);
+    let quad=0;
+    if(dx<0){quad=dy<0?2:1;}
+    else if(dy<=0){quad=3;if(dx===0)quad=2;}
+    const dir=[0,0],constraint=[[0.5,0.5],[0.5,0.5]];
+    let currentTerm=p0;
+    for(let i=0;i<2;i++){
+      if(currentTerm){
+        constraint[i][0]=(currentTerm.x-geo[i][0])/geo[i][2];
+        if(Math.abs(currentTerm.x-geo[i][0])<=1)dir[i]=C.MASK_W;
+        else if(Math.abs(currentTerm.x-geo[i][0]-geo[i][2])<=1)dir[i]=C.MASK_E;
+        constraint[i][1]=(currentTerm.y-geo[i][1])/geo[i][3];
+        if(Math.abs(currentTerm.y-geo[i][1])<=1)dir[i]=C.MASK_N;
+        else if(Math.abs(currentTerm.y-geo[i][1]-geo[i][3])<=1)dir[i]=C.MASK_S;
+      }
+      currentTerm=pe;
+    }
+    const sourceTopDist=geo[0][1]-(geo[1][1]+geo[1][3]);
+    const sourceLeftDist=geo[0][0]-(geo[1][0]+geo[1][2]);
+    const sourceBottomDist=geo[1][1]-(geo[0][1]+geo[0][3]);
+    const sourceRightDist=geo[1][0]-(geo[0][0]+geo[0][2]);
+    const vertexSeperations=[];
+    vertexSeperations[1]=Math.max(sourceLeftDist-totalBuffer,0);
+    vertexSeperations[2]=Math.max(sourceTopDist-totalBuffer,0);
+    vertexSeperations[4]=Math.max(sourceBottomDist-totalBuffer,0);
+    vertexSeperations[3]=Math.max(sourceRightDist-totalBuffer,0);
+    const portConstraint=[C.MASK_ALL,C.MASK_ALL];
+    const dirPref=[],horPref=[],vertPref=[];
+    horPref[0]=sourceLeftDist>=sourceRightDist?C.MASK_W:C.MASK_E;
+    vertPref[0]=sourceTopDist>=sourceBottomDist?C.MASK_N:C.MASK_S;
+    horPref[1]=v21Alpha27ReversePortConstraints(horPref[0]);
+    vertPref[1]=v21Alpha27ReversePortConstraints(vertPref[0]);
+    const preferredHorizDist=sourceLeftDist>=sourceRightDist?sourceLeftDist:sourceRightDist;
+    const preferredVertDist=sourceTopDist>=sourceBottomDist?sourceTopDist:sourceBottomDist;
+    const prefOrdering=[[0,0],[0,0]];
+    let preferredOrderSet=false;
+    for(let i=0;i<2;i++){
+      if(dir[i]!==0)continue;
+      if((horPref[i]&portConstraint[i])===0)horPref[i]=v21Alpha27ReversePortConstraints(horPref[i]);
+      if((vertPref[i]&portConstraint[i])===0)vertPref[i]=v21Alpha27ReversePortConstraints(vertPref[i]);
+      prefOrdering[i][0]=vertPref[i];
+      prefOrdering[i][1]=horPref[i];
+    }
+    if(preferredVertDist>0&&preferredHorizDist>0){
+      if(((horPref[0]&portConstraint[0])>0)&&((vertPref[1]&portConstraint[1])>0)){
+        prefOrdering[0][0]=horPref[0];prefOrdering[0][1]=vertPref[0];
+        prefOrdering[1][0]=vertPref[1];prefOrdering[1][1]=horPref[1];
+        preferredOrderSet=true;
+      }else if(((vertPref[0]&portConstraint[0])>0)&&((horPref[1]&portConstraint[1])>0)){
+        prefOrdering[0][0]=vertPref[0];prefOrdering[0][1]=horPref[0];
+        prefOrdering[1][0]=horPref[1];prefOrdering[1][1]=vertPref[1];
+        preferredOrderSet=true;
+      }
+    }
+    if(preferredVertDist>0&&!preferredOrderSet){
+      prefOrdering[0][0]=vertPref[0];prefOrdering[0][1]=horPref[0];
+      prefOrdering[1][0]=vertPref[1];prefOrdering[1][1]=horPref[1];
+      preferredOrderSet=true;
+    }
+    if(preferredHorizDist>0&&!preferredOrderSet){
+      prefOrdering[0][0]=horPref[0];prefOrdering[0][1]=vertPref[0];
+      prefOrdering[1][0]=horPref[1];prefOrdering[1][1]=vertPref[1];
+      preferredOrderSet=true;
+    }
+    for(let i=0;i<2;i++){
+      if(dir[i]!==0)continue;
+      if((prefOrdering[i][0]&portConstraint[i])===0)prefOrdering[i][0]=prefOrdering[i][1];
+      dirPref[i]=prefOrdering[i][0]&portConstraint[i];
+      dirPref[i]|=(prefOrdering[i][1]&portConstraint[i])<<8;
+      dirPref[i]|=(prefOrdering[1-i][i]&portConstraint[i])<<16;
+      dirPref[i]|=(prefOrdering[1-i][1-i]&portConstraint[i])<<24;
+      if((dirPref[i]&0xF)===0)dirPref[i]=dirPref[i]<<8;
+      if((dirPref[i]&0xF00)===0)dirPref[i]=(dirPref[i]&0xF)|(dirPref[i]>>8);
+      if((dirPref[i]&0xF0000)===0)dirPref[i]=(dirPref[i]&0xFFFF)|((dirPref[i]&0xF000000)>>8);
+      dir[i]=dirPref[i]&0xF;
+      if(portConstraint[i]===C.MASK_W||portConstraint[i]===C.MASK_N
+        ||portConstraint[i]===C.MASK_E||portConstraint[i]===C.MASK_S)dir[i]=portConstraint[i];
+    }
+    let sourceIndex=dir[0]===C.MASK_E?3:dir[0];
+    let targetIndex=dir[1]===C.MASK_E?3:dir[1];
+    sourceIndex-=quad;targetIndex-=quad;
+    if(sourceIndex<1)sourceIndex+=4;
+    if(targetIndex<1)targetIndex+=4;
+    const routePattern=C.ROUTE_PATTERNS[sourceIndex-1]?.[targetIndex-1];
+    if(!routePattern)return null;
+    const wayPoints=Array.from({length:12},()=>[0,0]);
+    wayPoints[0][0]=geo[0][0];wayPoints[0][1]=geo[0][1];
+    switch(dir[0]){
+      case C.MASK_W:wayPoints[0][0]-=sourceBuffer;wayPoints[0][1]+=constraint[0][1]*geo[0][3];break;
+      case C.MASK_S:wayPoints[0][0]+=constraint[0][0]*geo[0][2];wayPoints[0][1]+=geo[0][3]+sourceBuffer;break;
+      case C.MASK_E:wayPoints[0][0]+=geo[0][2]+sourceBuffer;wayPoints[0][1]+=constraint[0][1]*geo[0][3];break;
+      case C.MASK_N:wayPoints[0][0]+=constraint[0][0]*geo[0][2];wayPoints[0][1]-=sourceBuffer;break;
+    }
+    let currentIndex=0;
+    let lastOrientation=(dir[0]&(C.MASK_E|C.MASK_W))>0?0:1;
+    const initialOrientation=lastOrientation;
+    let currentOrientation=0;
+    for(let i=0;i<routePattern.length;i++){
+      const nextDirection=routePattern[i]&0xF;
+      let directionIndex=nextDirection===C.MASK_E?3:nextDirection;
+      directionIndex+=quad;
+      if(directionIndex>4)directionIndex-=4;
+      const direction=C.DIR_VECTORS[directionIndex-1];
+      currentOrientation=(directionIndex%2>0)?0:1;
+      if(currentOrientation!==lastOrientation){
+        currentIndex++;
+        wayPoints[currentIndex][0]=wayPoints[currentIndex-1][0];
+        wayPoints[currentIndex][1]=wayPoints[currentIndex-1][1];
+      }
+      const tar=(routePattern[i]&C.TARGET_MASK)>0;
+      const sou=(routePattern[i]&C.SOURCE_MASK)>0;
+      let side=(routePattern[i]&C.SIDE_MASK)>>5;
+      side=side<<quad;
+      if(side>0xF)side=side>>4;
+      const center=(routePattern[i]&C.CENTER_MASK)>0;
+      if((sou||tar)&&side<9){
+        let limit=0;
+        const souTar=sou?0:1;
+        if(center&&currentOrientation===0)limit=geo[souTar][0]+constraint[souTar][0]*geo[souTar][2];
+        else if(center)limit=geo[souTar][1]+constraint[souTar][1]*geo[souTar][3];
+        else limit=limits[souTar][side];
+        if(currentOrientation===0){
+          const lastX=wayPoints[currentIndex][0];
+          const deltaX=(limit-lastX)*direction[0];
+          if(deltaX>0)wayPoints[currentIndex][0]+=direction[0]*deltaX;
+        }else{
+          const lastY=wayPoints[currentIndex][1];
+          const deltaY=(limit-lastY)*direction[1];
+          if(deltaY>0)wayPoints[currentIndex][1]+=direction[1]*deltaY;
+        }
+      }else if(center){
+        wayPoints[currentIndex][0]+=direction[0]*Math.abs(vertexSeperations[directionIndex]/2);
+        wayPoints[currentIndex][1]+=direction[1]*Math.abs(vertexSeperations[directionIndex]/2);
+      }
+      if(currentIndex>0&&wayPoints[currentIndex][currentOrientation]===wayPoints[currentIndex-1][currentOrientation])currentIndex--;
+      else lastOrientation=currentOrientation;
+    }
+    const result=[];
+    for(let i=0;i<=currentIndex;i++){
+      if(i===currentIndex){
+        const targetOrientation=(dir[1]&(C.MASK_E|C.MASK_W))>0?0:1;
+        const sameOrient=targetOrientation===initialOrientation?0:1;
+        if(sameOrient!==(currentIndex+1)%2)break;
+      }
+      result.push({x:Math.round(wayPoints[i][0]*10)/10,y:Math.round(wayPoints[i][1]*10)/10});
+    }
+    for(let index=1;index<result.length;){
+      if(result[index-1].x!==result[index].x||result[index-1].y!==result[index].y)index++;
+      else result.splice(index,1);
+    }
+    return result;
+  }
+
+  /* mxEdgeStyle.SegmentConnector, ported from the same source. This is what draw.io routes a connector with
+     when it carries bends of its own - OrthConnector explicitly hands those over - so between the two,
+     every connector in an orthogonalEdgeStyle file is now routed by the algorithm that drew it.
+     It treats each stored bend as a coordinate to pick up rather than a corner to land on: it alternates
+     axis at every hint, taking only x from one and only y from the next, which is why a single stored bend
+     produces a staircase in draw.io and produced a diagonal here. Only applied to bends that came from a
+     file; routes our own layout computes are already orthogonal and must not be rewritten. */
+  function v21Alpha28SegmentConnector(source,target,p0,pe,storedHints){
+    if(!p0||!pe||!Array.isArray(storedHints)||!storedHints.length)return null;
+    const tol=1,result=[];
+    let lastPushed=null;
+    const pushPoint=point=>{
+      const pt={x:Math.round(point.x*10)/10,y:Math.round(point.y*10)/10};
+      if(lastPushed===null||Math.abs(lastPushed.x-pt.x)>=tol||Math.abs(lastPushed.y-pt.y)>=1){
+        result.push(pt);lastPushed=pt;
+      }
+      return lastPushed;
+    };
+    let hints=storedHints.map(h=>({x:Number(h.x),y:Number(h.y)}));
+    const pt={x:p0.x,y:p0.y};
+    /* Snap the outer hints onto the fixed end points where they are within tolerance. */
+    if(Math.abs(hints[0].x-pt.x)<tol)hints[0].x=pt.x;
+    if(Math.abs(hints[0].y-pt.y)<tol)hints[0].y=pt.y;
+    const tail=hints[hints.length-1];
+    if(Math.abs(tail.x-pe.x)<tol)tail.x=pe.x;
+    if(Math.abs(tail.y-pe.y)<tol)tail.y=pe.y;
+    let hint=hints[0],horizontal=true;
+    /* Both terminals are fixed points for us, so the floating-port channel tests collapse to the
+       alignment checks; currentTerm is null on both passes exactly as mxGraph sets it. */
+    let currentPt=p0,currentHint=hint;
+    for(let i=0;i<2;i++){
+      const fixedVertAlign=currentPt!==null&&currentPt.x===currentHint.x;
+      const fixedHozAlign=currentPt!==null&&currentPt.y===currentHint.y;
+      const hozChan=fixedHozAlign,vertChan=fixedVertAlign;
+      if(i===0&&((hozChan&&vertChan)||(fixedVertAlign&&fixedHozAlign))){/* try the target end instead */}
+      else if(vertChan||hozChan){
+        horizontal=hozChan;
+        if(i===1)horizontal=hints.length%2===0?hozChan:vertChan;
+        break;
+      }
+      currentPt=pe;
+      currentHint=hints[hints.length-1];
+      if(fixedVertAlign&&fixedHozAlign)hints=hints.slice(1);
+      if(!hints.length)return null;
+    }
+    if(horizontal&&p0.y!==hint.y)pushPoint({x:pt.x,y:hint.y});
+    else if(!horizontal&&p0.x!==hint.x)pushPoint({x:hint.x,y:pt.y});
+    if(horizontal)pt.y=hint.y;else pt.x=hint.x;
+    for(let i=0;i<hints.length;i++){
+      horizontal=!horizontal;
+      hint=hints[i];
+      if(horizontal)pt.y=hint.y;else pt.x=hint.x;
+      pushPoint({x:pt.x,y:pt.y});
+    }
+    if(hint){
+      if(horizontal&&pe.y!==hint.y)pushPoint({x:pe.x,y:hint.y});
+      else if(!horizontal&&pe.x!==hint.x)pushPoint({x:hint.x,y:pe.y});
+    }
+    /* Drop a trailing point that has effectively arrived, and square up the one before it. */
+    const last=result[result.length-1];
+    if(last&&Math.abs(pe.x-last.x)<=tol&&Math.abs(pe.y-last.y)<=tol){
+      result.pop();
+      const prior=result[result.length-1];
+      if(prior){
+        if(Math.abs(prior.x-pe.x)<tol)prior.x=pe.x;
+        if(Math.abs(prior.y-pe.y)<tol)prior.y=pe.y;
+      }
+    }
+    return result;
+  }
 
   /* ================= Curved connectors ================= */
   /* draw.io's curved=1 smooths an orthogonal route into flowing bends. Nothing here understood it, so those
@@ -18562,8 +19118,101 @@
   };
   const jandoBusyBaseAutoLayout=v2Alpha32AutoLayout;
   v2Alpha32AutoLayout=function(scopePool=null){
-    return jandoWithBusy('Arranging swimlane','Sizing shapes to their text, then routing connectors around them',()=>jandoBusyBaseAutoLayout(scopePool));
+    return jandoWithBusy('Arranging swimlane','Sizing shapes to their text, then routing connectors around them',
+      async()=>{
+        const before=snapshot(),beforeQuality=v21Alpha31Quality();
+        const undoDepth=state.undo.length;
+        const result=await jandoBusyBaseAutoLayout(scopePool);
+        const afterQuality=v21Alpha31Quality();
+        if(afterQuality.score>=beforeQuality.score){
+          restoreSnapshot(before);
+          while(state.undo.length>undoDepth)state.undo.pop();
+          render();
+          showToast('Kept the existing layout - rearranging scored worse than what was already there.',3000);
+          return false;
+        }
+        window.JandoStudio.lastArrange={before:beforeQuality,after:afterQuality};
+        return result;
+      });
   };
+
+  /* ================= Keep the better of the two layouts ================= */
+  /* Arrange rebuilds positions from the flow graph, which spreads a page out: across a 28 page document it
+     made pages 76% wider on average, and doubled connector crossings from 61 to 124. On 16 of those pages
+     the connectors came out measurably worse than the drawing it replaced - several were already clean and
+     arrange was the thing that made them messy. A page a consultant has laid out by hand is often already
+     good, and re-deriving it from scratch throws that away.
+     So: measure the page, arrange it, measure again, and keep whichever reads better. Breaking a rule -
+     a connector through a shape, content outside its lane, clipped text - outweighs everything, then
+     clutter, and width is a real cost rather than a free parameter. */
+  function v21Alpha31Quality(){
+    const pools=state.cells.filter(cell=>isVertex(cell)&&cell.shape==='swimlane');
+    const shapes=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane');
+    const rect=cell=>({x:cell.x,y:cell.y,w:cell.w,h:cell.h});
+    let through=0,outside=0,clipped=0,bends=0,length=0;
+    const segments=[];
+    for(const edge of state.cells){
+      if(!isEdge(edge))continue;
+      const points=routePoints(edge)||[];
+      let last=null;
+      for(let i=0;i<points.length-1;i++){
+        const a=points[i],b=points[i+1];
+        const dx=Math.abs(b.x-a.x),dy=Math.abs(b.y-a.y);
+        const direction=dx>=dy?'h':'v';
+        if(last&&last!==direction)bends++;
+        last=direction;length+=dx+dy;
+        if(dx<=1&&dy<=1)continue;
+        segments.push({id:edge.id,h:dy<=1,
+          x0:Math.min(a.x,b.x),x1:Math.max(a.x,b.x),y0:Math.min(a.y,b.y),y1:Math.max(a.y,b.y)});
+        for(const shape of shapes)if(v2Alpha44SegmentHitsRect(a,b,rect(shape)))through++;
+      }
+    }
+    let crossings=0,nearPx=0;
+    for(let i=0;i<segments.length;i++)for(let j=i+1;j<segments.length;j++){
+      const A=segments[i],B=segments[j];
+      if(A.id===B.id)continue;
+      if(A.h===B.h){
+        const gap=A.h?Math.abs(A.y0-B.y0):Math.abs(A.x0-B.x0);
+        if(gap>8)continue;
+        const overlap=A.h?Math.min(A.x1,B.x1)-Math.max(A.x0,B.x0):Math.min(A.y1,B.y1)-Math.max(A.y0,B.y0);
+        if(overlap>20)nearPx+=overlap;
+      }else{
+        const H=A.h?A:B,V=A.h?B:A;
+        if(V.x0>H.x0+1&&V.x0<H.x1-1&&H.y0>V.y0+1&&H.y0<V.y1-1)crossings++;
+      }
+    }
+    for(const pool of pools){
+      const horizontal=pool.orientation!=='vertical';
+      /* Use laneMetrics rather than stacking lane sizes from the pool origin: a pool has a title bar, so
+         hand-rolled bands sit a title's height out and report nearly every shape as outside its lane. That
+         mistake made the imported layout look far worse than it was, and arrange won every time on a term
+         that was measuring nothing real. */
+      const bands=new Map(laneMetrics(pool).map(metric=>[metric.id,
+        horizontal?{lo:metric.y,hi:metric.y+metric.height}:{lo:metric.x,hi:metric.x+metric.width}]));
+      for(const cell of shapes){
+        if(cell.containerId!==pool.id)continue;
+        const band=bands.get(cell.laneId);
+        const lo=horizontal?cell.y:cell.x,hi=horizontal?cell.y+cell.h:cell.x+cell.w;
+        if(!band||lo<band.lo-1||hi>band.hi+1)outside++;
+      }
+    }
+    const poolIds=new Set(pools.map(pool=>pool.id));
+    outside+=shapes.filter(cell=>cell.containerId&&!poolIds.has(cell.containerId)).length;
+    for(const cell of shapes){
+      if(!cell.label)continue;
+      const box=v21Alpha14FitBox(cell.label,{fontSize:Number(cell.fontSize||14),
+        padding:cell.textPadding,lineSpacing:cell.lineSpacing,width:cell.w,minWidth:60,maxWidth:cell.w,maxLines:99});
+      if(box.h>cell.h+1)clipped++;
+    }
+    const width=pools.length?Math.max(...pools.map(pool=>pool.x+pool.w)):0;
+    /* Weights tuned against the whole document rather than guessed. A connector clipping a shape is bad,
+       but not worth twenty new crossings to fix, which is what a heavier weight here bought: arrange won on
+       score while the page plainly read worse. Width is charged for, because spreading a page out is a cost
+       the reader pays. */
+    const score=through*220+outside*400+clipped*250
+      +crossings*45+nearPx*1.0+bends*2+width*0.09;
+    return{score,through,outside,clipped,crossings,nearPx:Math.round(nearPx),bends,width:Math.round(width)};
+  }
 
   /* ================= Reaching every page in a large document ================= */
   /* #pageTabs was a plain block with normal white-space, so the tabs - being inline-flex - wrapped onto a
@@ -18576,7 +19225,11 @@
      that lists the pages at full length. */
   const v21a23Style=document.createElement('style');v21a23Style.id='v21a23Style';v21a23Style.textContent=`
     #pageTabs{display:flex;flex-wrap:nowrap;align-items:flex-end;gap:1px;min-width:0}
-    #pageBar{scrollbar-width:thin}
+    /* A touch taller, and the add button holds its own width. Without flex-shrink:0 it was being squeezed
+       by the tab strip beside it, which slid it over the last tab's close control. */
+    #pageBar{scrollbar-width:thin;height:35px}
+    #addPageBtn{flex:0 0 auto;margin-left:8px}
+    .page-tab{height:31px}
     #v21a23PageMenuBtn{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;height:26px;margin:0 6px 2px 0;
       padding:0 8px;border:1px solid var(--line,#d8dde6);border-radius:4px;background:var(--panel,#fff);
       color:var(--text,#1f2937);font-size:11px;font-weight:650;cursor:pointer;white-space:nowrap}
@@ -18725,6 +19378,309 @@
   v21a23SyncButton();
   window.JandoStudio.pageMenu={open:v21a23OpenMenu,close:v21a23CloseMenu,
     entries:()=>v21a23PageEntries().map(entry=>({index:entry.index,name:entry.name,current:entry.current}))};
+
+  /* ================= JandoStudio v2.1.0-alpha.32 import fidelity and tidy ================= */
+  /* Measured across the 28 page consolidated file, straight from the import and before any auto layout:
+     101 of 303 shapes sat outside their lane, 16 connectors of 291 ran through a shape, 32 labels lay on top
+     of a shape and 33 more had another connector drawn across them. Auto layout already clears all of it,
+     but it re-lays the page out, which is not what a consultant's file should need on open. */
+
+  /* draw.io gives every lane its own offset inside the pool, and a file can leave a gap between two lanes or
+     start the first one below the pool's top. Only the lane's own length was read, so laneMetrics - which
+     divides the pool up in proportion to those lengths - moved every divider, and the shapes the file had
+     placed against the real dividers straddled them. Measure each lane from its own offset to where the next
+     one starts instead: the dividers then land exactly where the file puts them, and the lanes still tile the
+     pool, which is what the rest of the editor assumes. */
+  function v21Alpha32LaneSpan(sorted,index,orientation,width,height){
+    const vertical=orientation==='vertical',span=vertical?width:height;
+    const offsetOf=lane=>(vertical?lane.geom.x:lane.geom.y)||0;
+    const lengthOf=lane=>(vertical?lane.geom.w:lane.geom.h)||0;
+    const fallback=lengthOf(sorted[index])||span/sorted.length;
+    if(!(span>0))return fallback;
+    const start=index===0?0:offsetOf(sorted[index]);
+    const end=index===sorted.length-1?span:offsetOf(sorted[index+1]);
+    const size=end-start;
+    return size>1?size:fallback;
+  }
+
+  function v21Alpha32Shapes(){return state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane');}
+  function v21Alpha32Overlap(a,b){
+    return Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x))
+      *Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));
+  }
+  /* Liang-Barsky. v2Alpha44SegmentHitsRect answers only for horizontal and vertical segments, and a curved
+     connector is sampled as short diagonals, so it would report every curve as clear. */
+  function v21Alpha32SegmentHitsRect(a,b,rect){
+    let low=0,high=1;
+    const dx=b.x-a.x,dy=b.y-a.y;
+    const edges=[-dx,dx,-dy,dy],gaps=[a.x-rect.x,rect.x+rect.w-a.x,a.y-rect.y,rect.y+rect.h-a.y];
+    for(let i=0;i<4;i++){
+      if(Math.abs(edges[i])<1e-9){if(gaps[i]<0)return false;continue;}
+      const t=gaps[i]/edges[i];
+      if(edges[i]<0){if(t>high)return false;if(t>low)low=t;}
+      else{if(t<low)return false;if(t<high)high=t;}
+    }
+    return high>low;
+  }
+  function v21Alpha32DrawnPath(edge){
+    const points=routePoints(edge)||[];
+    return points.length>1?v21Alpha21DrawnPoints(edge,points):[];
+  }
+
+  /* Growing a lane moves every lane after it, so the shapes in those lanes travel with their lane - the same
+     rule a manual lane resize follows. Growing the last lane, or the pool's far side, moves nothing at all,
+     which is why anything hanging off the far edge is enclosed rather than dragged back in. */
+  function v21Alpha32GrowLane(pool,laneId,extra,moved){
+    if(!(extra>0))return false;
+    const horizontal=pool.orientation!=='vertical';
+    const order=pool.lanes.findIndex(lane=>lane.id===laneId);
+    if(order<0)return false;
+    const ranks=new Map(pool.lanes.map((lane,index)=>[lane.id,index]));
+    for(const cell of state.cells){
+      if(!isVertex(cell)||cell.shape==='swimlane'||cell.containerId!==pool.id)continue;
+      const rank=ranks.get(cell.laneId);
+      if(rank===undefined||rank<=order)continue;
+      if(horizontal)cell.y+=extra;else cell.x+=extra;
+      const been=moved.get(cell.id)||{x:0,y:0};
+      moved.set(cell.id,horizontal?{x:been.x,y:been.y+extra}:{x:been.x+extra,y:been.y});
+    }
+    pool.lanes[order].size=Math.max(1,Number(pool.lanes[order].size)||1)+extra;
+    if(horizontal)pool.h+=extra;else pool.w+=extra;
+    return true;
+  }
+
+  function v21Alpha32ContainInLanes(){
+    const moved=new Map();
+    let enclosed=0,nudged=0,grown=0,stuck=0;
+    const record=(cell,dx,dy)=>{const been=moved.get(cell.id)||{x:0,y:0};moved.set(cell.id,{x:been.x+dx,y:been.y+dy});};
+    const pools=state.cells.filter(cell=>isVertex(cell)&&cell.shape==='swimlane'&&!isFullyLocked(cell));
+    for(const pool of pools){
+      if(!pool.lanes||!pool.lanes.length)continue;
+      const horizontal=pool.orientation!=='vertical';
+      const children=()=>state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id);
+      /* A shape wider than the pool, or hanging off the far edge, is enclosed by extending the pool rather
+         than moved: its position is the consultant's and nothing else has to shift to make room. */
+      const kids=children();
+      if(kids.length){
+        const far=horizontal
+          ?Math.max(...kids.map(cell=>cell.x+cell.w))
+          :Math.max(...kids.map(cell=>cell.y+cell.h));
+        const edge=horizontal?pool.x+pool.w:pool.y+pool.h;
+        if(far>edge-16){if(horizontal)pool.w+=far-edge+24;else pool.h+=far-edge+24;enclosed++;}
+        const deep=horizontal
+          ?Math.max(...kids.map(cell=>cell.y+cell.h))
+          :Math.max(...kids.map(cell=>cell.x+cell.w));
+        const bottom=horizontal?pool.y+pool.h:pool.x+pool.w;
+        if(deep>bottom-16){
+          const last=pool.lanes[pool.lanes.length-1];
+          if(v21Alpha32GrowLane(pool,last.id,deep-bottom+24,moved))enclosed++;
+        }
+      }
+      /* A shape too tall for its lane needs the lane to grow; everything below it follows the lane down. */
+      for(let attempt=0;attempt<pool.lanes.length+1;attempt++){
+        const byId=new Map(laneMetrics(pool).map(metric=>[metric.id,metric]));
+        let widened=false;
+        for(const cell of children()){
+          const metric=byId.get(cell.laneId);if(!metric)continue;
+          const content=laneContentRect(pool,metric);
+          const room=horizontal?content.h:content.w,need=horizontal?cell.h:cell.w;
+          if(need<=room-8)continue;
+          if(v21Alpha32GrowLane(pool,metric.id,Math.ceil(need+16-room),moved)){grown++;widened=true;break;}
+        }
+        if(!widened)break;
+      }
+      /* Everything left over straddles a divider, so move it the few pixels back inside - unless that would
+         put it on top of a neighbour, in which case the drawn layout is the lesser evil. */
+      const byId=new Map(laneMetrics(pool).map(metric=>[metric.id,metric]));
+      for(const cell of children()){
+        if(isFullyLocked(cell))continue;
+        const metric=byId.get(cell.laneId);if(!metric)continue;
+        const content=laneContentRect(pool,metric);
+        const low=horizontal?content.y:content.x,high=horizontal?content.y+content.h:content.x+content.w;
+        const at=horizontal?cell.y:cell.x,size=horizontal?cell.h:cell.w;
+        /* Trigger on a shape that is over the divider or sitting on it, not on one that is merely close to
+           it, and then leave a 4px margin. Pulling everything within 4px to exactly 4px meant a document
+           this tidy had already cleaned came back from its own export wanting 22 more nudges, because
+           exported lane geometry is rounded to whole pixels. */
+        let next=at;
+        if(at<low+1)next=low+4;
+        else if(at+size>high-1)next=high-4-size;
+        const shift=next-at;
+        if(Math.abs(shift)<0.5)continue;
+        const trial=horizontal?{x:cell.x,y:cell.y+shift,w:cell.w,h:cell.h}:{x:cell.x+shift,y:cell.y,w:cell.w,h:cell.h};
+        const blocked=state.cells.some(other=>isVertex(other)&&other.shape!=='swimlane'&&other.id!==cell.id
+          &&v21Alpha32Overlap(trial,other)>25);
+        if(blocked){stuck++;continue;}
+        if(horizontal){cell.y=trial.y;record(cell,0,shift);}else{cell.x=trial.x;record(cell,shift,0);}
+        nudged++;
+      }
+    }
+    return{enclosed,nudged,grown,stuck,moved};
+  }
+
+  /* A shape that moved carries its ports with it, but the bends that came from the file stay where they were,
+     which leaves a kink right at the shape. Slide the bends by what the two ends moved, so a connector whose
+     ends both travelled - the usual case, since a lane moves as a whole - keeps its drawn shape exactly. */
+  function v21Alpha32ShiftWaypoints(moved){
+    if(!moved.size)return 0;
+    let shifted=0;
+    for(const edge of state.cells){
+      if(!isEdge(edge)||!(edge.waypoints||[]).length)continue;
+      const from=moved.get(edge.source),to=moved.get(edge.target);
+      if(!from&&!to)continue;
+      const dx=((from?.x||0)+(to?.x||0))/2,dy=((from?.y||0)+(to?.y||0))/2;
+      if(!dx&&!dy)continue;
+      edge.waypoints=edge.waypoints.map(point=>({...point,x:point.x+dx,y:point.y+dy}));
+      v2Alpha46RouteCache.delete(edge);
+      shifted++;
+    }
+    return shifted;
+  }
+
+  function v21Alpha32IsStraight(edge){
+    const points=routePoints(edge)||[];
+    if(points.length<2)return false;
+    let length=0;
+    for(let i=0;i<points.length-1;i++)
+      length+=Math.hypot(points[i+1].x-points[i].x,points[i+1].y-points[i].y);
+    const first=points[0],last=points[points.length-1];
+    return length<=Math.hypot(last.x-first.x,last.y-first.y)*1.02+1;
+  }
+  /* Moving a shape 16px back into its lane costs a straight connector its alignment, and 14 of them went
+     bent the first time the tidy ran. Where the two shapes still face each other down a clear corridor, put
+     both attachment points back on one line - the same test auto layout straightens with. */
+  function v21Alpha32Restraighten(wasStraight){
+    let restored=0;
+    for(const edge of state.cells){
+      if(!isEdge(edge)||isFullyLocked(edge)||!wasStraight.has(edge.id))continue;
+      if(v21Alpha32IsStraight(edge))continue;
+      const source=getCell(edge.source),target=getCell(edge.target);
+      if(!source||!target)continue;
+      const run=v21Alpha32StraightRun(source,target);
+      if(!run)continue;
+      const drawn={waypoints:deepClone(edge.waypoints||[]),sourcePort:edge.sourcePort,
+        targetPort:edge.targetPort,portBias:deepClone(edge.portBias||null)};
+      edge.sourcePort=run.sourcePort;edge.targetPort=run.targetPort;
+      edge.portBias={source:run.sourceBias,target:run.targetBias};
+      edge.waypoints=[];
+      v2Alpha46RouteCache.delete(edge);
+      if(v21Alpha32IsStraight(edge)){restored++;continue;}
+      edge.waypoints=drawn.waypoints;edge.sourcePort=drawn.sourcePort;edge.targetPort=drawn.targetPort;
+      if(drawn.portBias)edge.portBias=drawn.portBias;else delete edge.portBias;
+      v2Alpha46RouteCache.delete(edge);
+    }
+    return restored;
+  }
+  function v21Alpha32EdgeHitsShapes(edge,shapes){
+    const points=v21Alpha32DrawnPath(edge);
+    if(points.length<2)return false;
+    for(const shape of shapes){
+      if(shape.id===edge.source||shape.id===edge.target)continue;
+      const rect={x:shape.x+3,y:shape.y+3,w:Math.max(1,shape.w-6),h:Math.max(1,shape.h-6)};
+      for(let i=0;i<points.length-1;i++)
+        if(v21Alpha32SegmentHitsRect(points[i],points[i+1],rect))return true;
+    }
+    return false;
+  }
+
+  /* Only the connectors that actually cross a shape are re-routed. The other 275 of 291 keep the geometry
+     draw.io drew, which is the whole point of importing the file rather than laying it out again. */
+  function v21Alpha32ClearConnectors(){
+    const shapes=v21Alpha32Shapes();
+    let cleared=0,stubborn=0;
+    for(const edge of state.cells){
+      if(!isEdge(edge)||isFullyLocked(edge))continue;
+      if(!getCell(edge.source)||!getCell(edge.target))continue;
+      if(!v21Alpha32EdgeHitsShapes(edge,shapes))continue;
+      const drawn={waypoints:deepClone(edge.waypoints||[]),sourcePort:edge.sourcePort,
+        targetPort:edge.targetPort,portBias:deepClone(edge.portBias||null)};
+      v21Alpha12RouteArranged(edge,null,null);
+      v2Alpha46RouteCache.delete(edge);
+      if(v21Alpha32EdgeHitsShapes(edge,shapes)){
+        edge.waypoints=drawn.waypoints;edge.sourcePort=drawn.sourcePort;
+        edge.targetPort=drawn.targetPort;
+        if(drawn.portBias)edge.portBias=drawn.portBias;else delete edge.portBias;
+        v2Alpha46RouteCache.delete(edge);
+        stubborn++;
+      }else cleared++;
+    }
+    return{cleared,stubborn};
+  }
+
+  function v21Alpha32LabelRect(edge){
+    if(!edge.label)return null;
+    const box=v21Alpha14LabelBox(edge.label,Number(edge.fontSize||12));
+    const centre=pathMidpoint(edge);
+    if(!centre||!Number.isFinite(centre.x)||!Number.isFinite(centre.y))return null;
+    return{x:centre.x-box.w/2,y:centre.y-box.h/2,w:box.w,h:box.h};
+  }
+  /* Same principle as the connectors: find the labels that are genuinely covered and move only those, with
+     the labels that are already clear handed over as reserved so they do not get landed on. */
+  function v21Alpha32TidyLabels(){
+    const shapes=v21Alpha32Shapes();
+    const labelled=state.cells.filter(cell=>isEdge(cell)&&cell.label&&!isFullyLocked(cell));
+    if(!labelled.length)return 0;
+    const rects=new Map();
+    for(const edge of labelled){const rect=v21Alpha32LabelRect(edge);if(rect)rects.set(edge.id,rect);}
+    const drawn=new Map();
+    for(const cell of state.cells)if(isEdge(cell))drawn.set(cell.id,v21Alpha32DrawnPath(cell));
+    const clashes=new Set();
+    for(const [id,rect] of rects){
+      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>25)){clashes.add(id);continue;}
+      for(const [otherId,other] of rects)
+        if(otherId!==id&&v21Alpha32Overlap(rect,other)>25){clashes.add(id);clashes.add(otherId);}
+      if(clashes.has(id))continue;
+      for(const [edgeId,points] of drawn){
+        if(edgeId===id||points.length<2)continue;
+        let crossed=false;
+        for(let i=0;i<points.length-1&&!crossed;i++)
+          if(v21Alpha32SegmentHitsRect(points[i],points[i+1],rect))crossed=true;
+        if(crossed){clashes.add(id);break;}
+      }
+    }
+    if(!clashes.size)return 0;
+    const reserved=[...rects].filter(([id])=>!clashes.has(id)).map(([,rect])=>rect);
+    v21Alpha15PlaceLabels(labelled.filter(edge=>clashes.has(edge.id)),reserved);
+    return clashes.size;
+  }
+
+  function v21Alpha32TidyPage(){
+    const wasStraight=new Set(state.cells.filter(cell=>isEdge(cell)&&v21Alpha32IsStraight(cell)).map(cell=>cell.id));
+    const contained=v21Alpha32ContainInLanes();
+    v21Alpha32ShiftWaypoints(contained.moved);
+    const restraightened=v21Alpha32Restraighten(wasStraight);
+    const connectors=v21Alpha32ClearConnectors();
+    const labels=v21Alpha32TidyLabels();
+    return{enclosed:contained.enclosed,nudged:contained.nudged,grown:contained.grown,
+      stuck:contained.stuck,restraightened,cleared:connectors.cleared,
+      stubborn:connectors.stubborn,labels};
+  }
+  /* state.cells is only ever the page on screen, and the other pages are plain arrays hanging off state.pages,
+     so each one is swapped in to be tidied - the same way orphan adoption walks the document on import. */
+  function v21Alpha32TidyDocument(){
+    const totals={enclosed:0,nudged:0,grown:0,stuck:0,restraightened:0,cleared:0,stubborn:0,labels:0,pages:0};
+    const add=result=>{for(const key in result)totals[key]+=result[key];totals.pages++;};
+    const keep=state.cells;
+    for(const page of state.pages||[]){
+      if(!Array.isArray(page.cells))continue;
+      state.cells=page.cells;
+      try{add(v21Alpha32TidyPage());}catch(error){console.warn('Tidy skipped a page',error);}
+    }
+    state.cells=keep;
+    try{add(v21Alpha32TidyPage());}catch(error){console.warn('Tidy skipped the open page',error);}
+    return totals;
+  }
+
+  let v21Alpha32LastTidy=null;
+  const v21Alpha32BaseImport=importDrawioXml;
+  importDrawioXml=async function(text,filename='Opened.drawio'){
+    const result=await v21Alpha32BaseImport(text,filename);
+    v21Alpha32LastTidy=v21Alpha32TidyDocument();
+    render();
+    return result;
+  };
+  window.JandoStudio.tidyImport={run:()=>v21Alpha32TidyDocument(),page:()=>v21Alpha32TidyPage(),
+    last:()=>v21Alpha32LastTidy};
 
   render();
 
