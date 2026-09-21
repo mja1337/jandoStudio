@@ -4892,6 +4892,18 @@
       add.addEventListener('click', () => addLane(cell, cell.lanes.length));
       section.appendChild(add);
       propsContent.appendChild(section);
+      /* The pool's own heading, which draw.io files bring in and which there was otherwise no way to
+         reach: double-clicking the band edits it in place, and this is the same thing from the panel.
+         Setting the height to 0 removes the band and gives the space back to the lanes. */
+      const headingInput = document.createElement('input');
+      headingInput.type = 'text';
+      headingInput.value = cell.label || '';
+      headingInput.placeholder = 'No heading';
+      headingInput.addEventListener('change', () => changeCell(cell, () => { cell.label = headingInput.value; }));
+      propsContent.appendChild(field('Pool heading', headingInput));
+      propsContent.appendChild(field('Heading height', numberInput(cell.headerSize || 0, (value) => changeCell(cell, () => {
+        cell.headerSize = clamp(value, 0, Math.max(0, (cell.orientation === 'vertical' ? cell.w : cell.h) - 24));
+      }), { min: 0, max: 200, step: 1 })));
       propsContent.appendChild(field('Title strip width', numberInput(cell.titleWidth, (value) => changeCell(cell, () => { cell.titleWidth = clamp(value, 24, Math.max(24, (cell.orientation === 'vertical' ? cell.h : cell.w) * 0.35)); }), { min: 24, max: 220, step: 1 })));
     } else if (cell.shape !== 'legend') {
       const area = document.createElement('textarea');
@@ -5240,8 +5252,11 @@
       }
       menu.appendChild(contextMenuButton(isEdge(cell) ? 'Edit connector label' : 'Edit text', () => {
         if (cell.shape === 'swimlane') {
-          const metric = laneForPoint(cell, world.x, world.y) || laneMetrics(cell)[0];
-          openTextModal(cell.id, metric?.index ?? 0);
+          if (v21Alpha39OnHeading(cell, world)) openTextModal(cell.id);
+          else {
+            const metric = laneForPoint(cell, world.x, world.y) || laneMetrics(cell)[0];
+            openTextModal(cell.id, metric?.index ?? 0);
+          }
         } else openTextModal(cell.id);
       }, { shortcut: 'Enter', disabled: isTextLocked(cell) }));
       if (isEdge(cell)) {
@@ -6203,9 +6218,11 @@
       if (isEdge(targetCell)) insertEdgeWaypoint(targetCell, world);
       else if (isTextLocked(targetCell)) showToast('Text editing is locked for this item.');
       else if (targetCell.shape === 'swimlane') {
-        const metrics = laneMetrics(targetCell);
-        const lane = metrics.find((metric) => world.y >= metric.y && world.y <= metric.y + metric.height) || metrics[0];
-        openTextModal(targetCell.id, lane?.index ?? 0);
+        if (v21Alpha39OnHeading(targetCell, world)) openTextModal(targetCell.id);
+        else {
+          const lane = laneForPoint(targetCell, world.x, world.y) || laneMetrics(targetCell)[0];
+          openTextModal(targetCell.id, lane?.index ?? 0);
+        }
       } else openTextModal(targetCell.id);
       return;
     }
@@ -6717,9 +6734,11 @@
       return;
     }
     if (cell.shape === 'swimlane') {
-      const metrics = laneMetrics(cell);
-      const lane = metrics.find((metric) => world.y >= metric.y && world.y <= metric.y + metric.height) || metrics[0];
-      openTextModal(cell.id, lane.index);
+      if (v21Alpha39OnHeading(cell, world)) openTextModal(cell.id);
+      else {
+        const lane = laneForPoint(cell, world.x, world.y) || laneMetrics(cell)[0];
+        openTextModal(cell.id, lane.index);
+      }
     } else {
       openTextModal(cell.id);
     }
@@ -6761,6 +6780,17 @@
       width = Math.max(80, (vertical ? metric.width : metric.height) * state.zoom - 12);
       height = Math.max(28, title * state.zoom - 8);
       if (!vertical && cell.titleDirection !== 'horizontal') rotation = cell.titleDirection === 'top-down' ? 90 : -90;
+      editor.dataset.kind = 'lane';
+    } else if (cell.shape === 'swimlane' && !target.laneId && Number(cell.headerSize) > 0) {
+      /* Editing the pool's own heading, so the box belongs over the band and not over the whole pool. */
+      const vertical = cell.orientation === 'vertical';
+      const header = Number(cell.headerSize) || 0;
+      center = worldToClient(vertical
+        ? { x: cell.x + header / 2, y: cell.y + cell.h / 2 }
+        : { x: cell.x + cell.w / 2, y: cell.y + header / 2 });
+      width = Math.max(120, (vertical ? cell.h : cell.w) * state.zoom - 16);
+      height = Math.max(24, header * state.zoom - 6);
+      if (vertical) rotation = -90;
       editor.dataset.kind = 'lane';
     } else if (isEdge(cell)) {
       center = worldToClient(pathMidpoint(cell));
@@ -13156,7 +13186,15 @@
     if(targetCell&&isVertex(targetCell)&&!modifierKey(event)&&!event.altKey){let ancestor=parentGroup(targetCell);while(ancestor){if(state.selected.has(ancestor.id)){targetCell=ancestor;break;}ancestor=parentGroup(ancestor);}}
     if(!targetCell)return;
     if(!event.altKey&&registerCanvasClick(isEdge(targetCell)?'edge-line':'vertex',targetCell.id,world)){
-      if(isEdge(targetCell))insertEdgeWaypoint(targetCell,world);else if(isTextLocked(targetCell))showToast('Text editing is locked for this item.');else if(targetCell.shape==='swimlane'){const metrics=laneMetrics(targetCell),lane=metrics.find(metric=>world.y>=metric.y&&world.y<=metric.y+metric.height)||metrics[0];openTextModal(targetCell.id,lane?.index??0);}else openTextModal(targetCell.id);v2Alpha27ShowAssist('tools',candidates,index,event);return;
+      if(isEdge(targetCell))insertEdgeWaypoint(targetCell,world);else if(isTextLocked(targetCell))showToast('Text editing is locked for this item.');else if(targetCell.shape==='swimlane'){const metrics=laneMetrics(targetCell),vertical=targetCell.orientation==='vertical';
+        /* The heading band is not a lane, so a double-click on it used to fall through to lane one and
+           rename that instead. Taken from what was actually under the pointer rather than from the world
+           point, which is the same way a lane's title strip is recognised. Which lane was hit is measured
+           along the pool's own axis too - it only ever tested y, so a vertical pool always said lane one. */
+        const along=vertical?world.x:world.y;
+        const lane=metrics.find(metric=>along>=(vertical?metric.x:metric.y)&&along<=(vertical?metric.x+metric.width:metric.y+metric.height));
+        if(v21Alpha39OnHeading(targetCell,world))openTextModal(targetCell.id);
+        else openTextModal(targetCell.id,(lane||metrics[0])?.index??0);}else openTextModal(targetCell.id);v2Alpha27ShowAssist('tools',candidates,index,event);return;
     }
     if(event.shiftKey){if(state.selected.has(targetCell.id))state.selected.delete(targetCell.id);else state.selected.add(targetCell.id);}else if(!state.selected.has(targetCell.id))state.selected=new Set([targetCell.id]);
     if((isVertex(targetCell)||isEdge(targetCell))&&state.selected.has(targetCell.id))beginBulkDrag(targetCell,world,event);
@@ -17737,7 +17775,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.38';
+  const JANDO_VERSION='2.1.0-alpha.39';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17817,7 +17855,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha38';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha39';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20007,6 +20045,19 @@
     #addPageBtn{flex:0 0 auto;margin-left:8px}
   `;
   document.head.appendChild(v21Alpha36Style);
+
+  /* The heading band is not a lane, so a double-click on it used to fall through to lane one and rename
+     that instead. Tested against the band itself rather than against what was under the pointer, because
+     by the second click of a double the selection outline is over the top of it. */
+  function v21Alpha39OnHeading(pool,world){
+    if(!pool||pool.shape!=='swimlane'||!world)return false;
+    const header=Number(pool.headerSize)||0;
+    if(header<=0)return false;
+    const vertical=pool.orientation==='vertical';
+    const along=vertical?world.x:world.y,start=vertical?pool.x:pool.y;
+    return along>=start&&along<=start+header;
+  }
+  window.JandoStudio.headingHit=(poolId,x,y)=>v21Alpha39OnHeading(getCell(poolId),{x,y});
 
   render();
 
