@@ -19997,6 +19997,53 @@
     }
     return merged;
   }
+  /* A white-backed connector label is hard to associate with its own line when another connector passes
+     through its 10px breathing room. Move the labelled run itself (not merely the text) by changing its two
+     surrounding bend points. Endpoints remain attached to their shapes and the rest of the imported route
+     stays intact. */
+  function v21Alpha49SeparateCloseLabelledEdges(){
+    const buffer=10,shapes=v21Alpha32Shapes();
+    const labelled=state.cells.filter(cell=>isEdge(cell)&&cell.label&&!isFullyLocked(cell));
+    let separated=0;
+    for(const edge of labelled){
+      const rect=v21Alpha32LabelRect(edge),path=routePoints(edge)||[];
+      if(!rect||path.length<4||!Array.isArray(edge.waypoints)||edge.waypoints.length<2)continue;
+      const centre={x:rect.x+rect.w/2,y:rect.y+rect.h/2};
+      let labelSegment=-1,labelDistance=Infinity;
+      for(let i=0;i<path.length-1;i++){
+        const distance=projectPointToSegment(centre,path[i],path[i+1]).distance;
+        if(distance<labelDistance){labelDistance=distance;labelSegment=i;}
+      }
+      /* Only an interior segment has two editable bend points. */
+      if(labelSegment<1||labelSegment>=path.length-2)continue;
+      const a=path[labelSegment],b=path[labelSegment+1],horizontal=Math.abs(b.x-a.x)>=Math.abs(b.y-a.y);
+      const roomy={x:rect.x-buffer,y:rect.y-buffer,w:rect.w+buffer*2,h:rect.h+buffer*2};
+      let closest=null;
+      for(const other of state.cells){
+        if(!isEdge(other)||other.id===edge.id)continue;
+        const points=v21Alpha32DrawnPath(other);
+        for(let i=0;i<points.length-1;i++){
+          if(!v21Alpha32SegmentHitsRect(points[i],points[i+1],roomy))continue;
+          const mid={x:(points[i].x+points[i+1].x)/2,y:(points[i].y+points[i+1].y)/2};
+          const distance=horizontal?Math.abs(mid.y-a.y):Math.abs(mid.x-a.x);
+          if(!closest||distance<closest.distance)closest={mid,distance};
+        }
+      }
+      if(!closest)continue;
+      const half=horizontal?rect.h/2:rect.w/2;
+      const needed=Math.max(buffer,half+buffer-closest.distance);
+      const direction=horizontal?(closest.mid.y<=a.y?1:-1):(closest.mid.x<=a.x?1:-1);
+      const candidate=deepClone(edge.waypoints);
+      const first=candidate[labelSegment-1],last=candidate[labelSegment];
+      if(!first||!last)continue;
+      if(horizontal){first.y+=direction*needed;last.y+=direction*needed;}
+      else{first.x+=direction*needed;last.x+=direction*needed;}
+      const original=edge.waypoints;edge.waypoints=candidate;v2Alpha46RouteCache.delete(edge);
+      if(v21Alpha32EdgeHitsShapes(edge,shapes)){edge.waypoints=original;v2Alpha46RouteCache.delete(edge);continue;}
+      separated++;
+    }
+    return separated;
+  }
 
   function v21Alpha32TidyPage(pageIndex=-1){
     const textFitted=v21Alpha48FitImportedShapeText();
@@ -20006,6 +20053,7 @@
     v21Alpha32ShiftWaypoints(v21Alpha48MergeMoves(madeRoom,contained.moved));
     const restraightened=v21Alpha32Restraighten(wasStraight);
     const connectors=v21Alpha32ClearConnectors();
+    const labelledConnectors=v21Alpha49SeparateCloseLabelledEdges();
     /* A label's position is held as an offset from the midpoint of its connector, so moving a shape or
        re-routing a connector leaves that offset pointing at nothing - which is how the No on Restock?
        ended up adrift two lanes away. Put every imported label back on its line before working out which
@@ -20014,12 +20062,12 @@
     const labels=v21Alpha32TidyLabels(pageIndex);
     return{enclosed:contained.enclosed,nudged:contained.nudged+madeRoom.size,grown:contained.grown+textFitted.grown,
       stuck:contained.stuck,restraightened,cleared:connectors.cleared,
-      stubborn:connectors.stubborn,labels};
+      stubborn:connectors.stubborn,labels, labelledConnectors};
   }
   /* state.cells is only ever the page on screen, and the other pages are plain arrays hanging off state.pages,
      so each one is swapped in to be tidied - the same way orphan adoption walks the document on import. */
   function v21Alpha32TidyDocument(){
-    const totals={enclosed:0,nudged:0,grown:0,stuck:0,restraightened:0,cleared:0,stubborn:0,labels:0,pages:0};
+    const totals={enclosed:0,nudged:0,grown:0,stuck:0,restraightened:0,cleared:0,stubborn:0,labels:0,labelledConnectors:0,pages:0};
     const add=result=>{for(const key in result)totals[key]+=result[key];totals.pages++;};
     const keep=state.cells;
     const pages=state.pages||[];
