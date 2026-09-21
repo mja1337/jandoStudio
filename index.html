@@ -7088,7 +7088,9 @@
       if (key === 'v' && event.altKey) { event.preventDefault(); pasteStyle(); return; }
       if (key === 'c') { event.preventDefault(); copySelection(); return; }
       if (key === 'x') { event.preventDefault(); cutSelection(); return; }
-      if (key === 'v') { event.preventDefault(); pasteSelection(); return; }
+      /* Not prevented, so the browser still raises a paste and an image on the system clipboard can
+         reach it. Pasting shapes is armed on a short timer instead and cancelled if an image turns up. */
+      if (key === 'v') { v21Alpha40ArmShapePaste(); return; }
       if (key === 'd') { event.preventDefault(); duplicateSelection(); return; }
       if (key === 'a') { event.preventDefault(); selectAll(); return; }
     }
@@ -17775,7 +17777,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.39';
+  const JANDO_VERSION='2.1.0-alpha.40';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17855,7 +17857,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha39';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha40';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20058,6 +20060,93 @@
     return along>=start&&along<=start+header;
   }
   window.JandoStudio.headingHit=(poolId,x,y)=>v21Alpha39OnHeading(getCell(poolId),{x,y});
+
+  /* ================= JandoStudio v2.1.0-alpha.40 paste an image from the clipboard ================= */
+  /* Cmd+V was consumed outright for this app's own clipboard of shapes, and preventing the key's default
+     also stops the browser raising a paste, so an image copied from anywhere else could never arrive.
+     The key now lets the paste through and arms the shape paste behind it; whichever is actually on the
+     clipboard wins, and a paste into a text box is left alone entirely. */
+  let v21Alpha40ShapePasteTimer=null;
+  function v21Alpha40ArmShapePaste(){
+    if(v21Alpha40ShapePasteTimer)clearTimeout(v21Alpha40ShapePasteTimer);
+    v21Alpha40ShapePasteTimer=setTimeout(()=>{v21Alpha40ShapePasteTimer=null;pasteSelection();},90);
+  }
+  function v21Alpha40CancelShapePaste(){
+    if(!v21Alpha40ShapePasteTimer)return;
+    clearTimeout(v21Alpha40ShapePasteTimer);v21Alpha40ShapePasteTimer=null;
+  }
+  function v21Alpha40EditingText(){
+    const active=document.activeElement;
+    if(!active||active===document.body)return false;
+    if(active.isContentEditable)return true;
+    return ['INPUT','TEXTAREA','SELECT'].includes(active.tagName);
+  }
+  function v21Alpha40ClipboardImage(data){
+    for(const item of [...(data?.items||[])])
+      if(item.kind==='file'&&/^image\//.test(item.type||'')){
+        const file=item.getAsFile();
+        if(file)return file;
+      }
+    for(const file of [...(data?.files||[])])if(/^image\//.test(file.type||''))return file;
+    return null;
+  }
+  function v21Alpha40NameFor(file){
+    if(file.name&&/\.[a-z0-9]+$/i.test(file.name))return file;
+    const stamp=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    const extension=(file.type||'image/png').split('/')[1]||'png';
+    try{return new File([file],`Pasted image ${stamp}.${extension}`,{type:file.type||'image/png'});}
+    catch{return file;}
+  }
+  /* Opening an image file warns first that image editing is its own mode, which is worth saying when you
+     picked a file but not on every paste - nothing is replaced, and the paste says plainly what it did. */
+  let v21Alpha40Silent=false;
+  const v21Alpha40BaseNotice=v110CompatibilityNotice;
+  v110CompatibilityNotice=function(file){
+    if(v21Alpha40Silent)return Promise.resolve(true);
+    return v21Alpha40BaseNotice(file);
+  };
+  async function v21Alpha40PasteImage(file){
+    const named=v21Alpha40NameFor(file);
+    v21Alpha40Silent=true;
+    try{return await v21Alpha40PasteImageInner(named);}finally{v21Alpha40Silent=false;}
+  }
+  /* Two separate things are called Image: the workspace on the left, which carries the image tools, and
+     the panel tab on the right, which only exists for an image page. Land on both. */
+  function v21Alpha40ShowImageWorkspace(){
+    setWorkspace('paint');
+    v111RenderImagePanel();
+    const tab=document.querySelector('.right-tab.image-tab');
+    if(tab&&!tab.classList.contains('hidden'))tab.click();
+  }
+  async function v21Alpha40PasteImageInner(named){
+    /* On an image page the paste belongs in that image, as another layer over what is already there.
+       On a diagram page there is nothing to layer onto, so it arrives as an image page of its own.
+       Deliberately not the path that opening an image file takes: that one offers to throw the current
+       document away, which is not a thing a paste should ever do. */
+    if(v110ImageDoc()){
+      await v111AddRasterLayerFromFile(named);
+      markDirty();
+      v21Alpha40ShowImageWorkspace();
+      showToast('Pasted as a new image layer.');
+      return true;
+    }
+    const added=await v11113AddImageAsPage(named);
+    if(added===false)return false;
+    v21Alpha40ShowImageWorkspace();
+    return true;
+  }
+  document.addEventListener('paste',event=>{
+    if(v21Alpha40EditingText())return;
+    const file=v21Alpha40ClipboardImage(event.clipboardData);
+    if(!file)return;
+    v21Alpha40CancelShapePaste();
+    event.preventDefault();
+    v21Alpha40PasteImage(file).catch(error=>{
+      console.warn('Clipboard image could not be pasted',error);
+      showToast('That clipboard image could not be pasted.');
+    });
+  });
+  window.JandoStudio.pasteImage=file=>v21Alpha40PasteImage(file);
 
   render();
 
