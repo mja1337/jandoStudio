@@ -2312,7 +2312,11 @@
     pool.titleDirection = ['bottom-up', 'top-down', 'horizontal'].includes(pool.titleDirection) ? pool.titleDirection : 'bottom-up';
     pool.constrainContents = Boolean(pool.constrainContents);
     pool.moveContents = pool.moveContents !== false;
-    const dimension = pool.orientation === 'vertical' ? pool.w : pool.h;
+    /* The heading band a draw.io pool carries across its whole width, above the lanes. Zero on a pool that
+       has none, which is every pool this app creates itself. */
+    const outer = pool.orientation === 'vertical' ? pool.w : pool.h;
+    pool.headerSize = clamp(Number(pool.headerSize) || 0, 0, Math.max(0, outer - 24));
+    const dimension = (pool.orientation === 'vertical' ? pool.w : pool.h) - pool.headerSize;
     if (!Array.isArray(pool.lanes) || !pool.lanes.length) pool.lanes = [newLane('Lane 1', dimension)];
     pool.lanes = pool.lanes.map((lane, index) => ({
       id: lane.id || newId('lane'),
@@ -2398,9 +2402,10 @@
     ensureSwimlaneDefaults(swimlane);
     const raw = swimlane.lanes;
     const horizontal = swimlane.orientation !== 'vertical';
-    const dimension = horizontal ? swimlane.h : swimlane.w;
+    const header = Number(swimlane.headerSize) || 0;
+    const dimension = (horizontal ? swimlane.h : swimlane.w) - header;
     const total = raw.reduce((sum, lane) => sum + Math.max(1, Number(lane.size) || 1), 0);
-    let cursor = horizontal ? swimlane.y : swimlane.x;
+    let cursor = (horizontal ? swimlane.y : swimlane.x) + header;
     return raw.map((lane, index) => {
       const length = index === raw.length - 1
         ? (horizontal ? swimlane.y + swimlane.h : swimlane.x + swimlane.w) - cursor
@@ -7216,7 +7221,17 @@
     }
     function appendEdgeCell(edge){ensureEdgeDefaults(edge);const edgeCell=createMxCell(doc,{id:edge.id,value:drawioLabel(edge.label||''),style:buildEdgeStyle(edge),edge:'1',parent:'1',source:edge.source,target:edge.target,localLockText:edge.locks?.text?'1':undefined,localLockAll:edge.locks?.all?'1':undefined},{relative:'1'});const geometry=edgeCell.querySelector('mxGeometry');if(edge.waypoints?.length){const array=doc.createElement('Array');array.setAttribute('as','points');edge.waypoints.forEach((point)=>{const p=doc.createElement('mxPoint');p.setAttribute('x',String(round(point.x)));p.setAttribute('y',String(round(point.y)));array.appendChild(p);});geometry.appendChild(array);}if(edge.labelOffset&&(Math.abs(edge.labelOffset.x)>0.01||Math.abs(edge.labelOffset.y)>0.01)){const o=doc.createElement('mxPoint');o.setAttribute('as','offset');o.setAttribute('x',String(round(edge.labelOffset.x)));o.setAttribute('y',String(round(edge.labelOffset.y)));geometry.appendChild(o);}root.appendChild(edgeCell);emitted.add(edge.id);}
     function appendPool(pool){
-      ensureSwimlaneDefaults(pool);root.appendChild(createMxCell(doc,{id:pool.id,value:'',style:styleString(['group'],{aspect:'fixed',connectable:'0'}),vertex:'1',connectable:'0',parent:'1',localOrientation:pool.orientation,localTitleDirection:pool.titleDirection,localConstrainContents:pool.constrainContents?'1':'0',localMoveContents:pool.moveContents?'1':'0',...attrsFor(pool)},{x:round(pool.x),y:round(pool.y),width:round(pool.w),height:round(pool.h)}));emitted.add(pool.id);
+      ensureSwimlaneDefaults(pool);
+      /* A pool with a heading band is written as draw.io writes one - a swimlane carrying the title, with
+         startSize for the band - so the heading survives the trip out as well as the trip in. Without one
+         it stays the plain group it has always been. */
+      const header=Number(pool.headerSize)||0;
+      const poolStyle=header>0
+        ?styleString(['swimlane'],{horizontal:pool.orientation==='vertical'?'0':'1',startSize:String(round(header)),
+          fontStyle:'1',html:'1',whiteSpace:'wrap',fillColor:pool.fill||'#ffffff',strokeColor:pool.stroke||'#64748b',
+          fontColor:pool.fontColor||'#1f2937',fontSize:String(pool.fontSize||13),connectable:'0'})
+        :styleString(['group'],{aspect:'fixed',connectable:'0'});
+      root.appendChild(createMxCell(doc,{id:pool.id,value:drawioLabel(pool.label||''),style:poolStyle,vertex:'1',connectable:'0',parent:'1',localHeaderSize:String(round(header)),localOrientation:pool.orientation,localTitleDirection:pool.titleDirection,localConstrainContents:pool.constrainContents?'1':'0',localMoveContents:pool.moveContents?'1':'0',...attrsFor(pool)},{x:round(pool.x),y:round(pool.y),width:round(pool.w),height:round(pool.h)}));emitted.add(pool.id);
       const metrics=laneMetrics(pool),metricById=new Map(metrics.map((m)=>[m.id,m]));metrics.forEach((metric)=>{const lane=metric.lane,vertical=pool.orientation==='vertical';const style=styleString(['swimlane'],{horizontal:vertical?'1':'0',startSize:String(round(pool.titleWidth||52)),html:'1',whiteSpace:'wrap',collapsible:'1',recursiveResize:'0',container:'1',fillColor:lane.fill||pool.fill||'#ffffff',strokeColor:pool.stroke||'#64748b',strokeWidth:String(pool.strokeWidth||1.5),fontColor:pool.fontColor||'#1f2937',fontSize:String(pool.fontSize||13),align:'center',verticalAlign:'middle',direction:!vertical&&pool.titleDirection==='top-down'?'south':undefined});root.appendChild(createMxCell(doc,{id:lane.id,value:drawioLabel(lane.name),style,vertex:'1',parent:pool.id,collapsed:lane.collapsed?'1':'0',localLaneFill:lane.fill||'',localLaneHidden:lane.hidden?'1':'0',localExpandedSize:lane.expandedSize||''},{x:round(metric.x-pool.x),y:round(metric.y-pool.y),width:round(metric.width),height:round(metric.height)}));});
       state.cells.filter((cell)=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id&&!cell.parentGroupId).forEach((cell)=>{const metric=metricById.get(cell.laneId)||laneForCell(cell,pool)||metrics[0];if(!metric)return;const origin=pool.orientation==='vertical'?{x:metric.x,y:pool.y}:{x:pool.x,y:metric.y};if(isGroup(cell))appendGroup(cell,metric.id,origin);else appendVertexCell(cell,metric.id,origin);});
     }
@@ -7481,6 +7496,11 @@
           expandedSize: Number(lane.element.getAttribute('localExpandedSize') || 0) || null
         })),
         orientation,
+        /* The pool's own heading: a band across the whole pool above the first lane, which draw.io writes
+           as the pool's startSize and which shows up here as the offset of the first lane. */
+        label: stripHtmlLabel(group.value) || '',
+        headerSize: Math.max(0, Number(group.element.getAttribute('localHeaderSize'))
+          || (orientation === 'vertical' ? (sorted[0]?.geom.x || 0) : (sorted[0]?.geom.y || 0))),
         titleDirection: group.element.getAttribute('localTitleDirection') || (firstStyle.direction === 'south' ? 'top-down' : 'bottom-up'),
         constrainContents: group.element.getAttribute('localConstrainContents') === '1',
         moveContents: group.element.getAttribute('localMoveContents') !== '0',
@@ -8005,7 +8025,11 @@
     const parser=new DOMParser(),doc=parser.parseFromString(text,'application/xml');if(doc.querySelector('parsererror'))throw new Error('The selected file is not valid XML.');const diagrams=doc.documentElement.tagName==='mxfile'?[...doc.querySelectorAll(':scope > diagram')]:[];if(!diagrams.length)return originalImportDrawioXml(text,filename);
     const pages=[];for(const d of diagrams){let model=d.querySelector(':scope > mxGraphModel');if(!model){const expanded=await decompressDiagram(d.textContent);model=parser.parseFromString(expanded,'application/xml').documentElement;}const imported=parseMxGraphModel(model);let layers=[];try{const raw=model.getAttribute('localLayerDefinitions');if(raw)layers=JSON.parse(decodeURIComponent(raw));}catch{}if(!layers.length){const root=model.querySelector(':scope > root');layers=[...root?.children||[]].filter(n=>n.tagName==='mxCell'&&n.getAttribute('parent')==='0'&&n.getAttribute('id')!=='0').map(n=>({id:n.getAttribute('id'),name:n.getAttribute('value')||'Layer',visible:n.getAttribute('localVisible')!=='0',locked:n.getAttribute('localLocked')==='1',opacity:Number(n.getAttribute('localOpacity')||100),color:n.getAttribute('localColor')||'#64748b',folderId:n.getAttribute('localFolderId')||null}));}if(!layers.length)layers=v18DefaultLayers();
       const layerIds=new Set(layers.map(l=>l.id)),parentById=new Map([...model.querySelectorAll('mxCell')].map(n=>[n.getAttribute('id'),n.getAttribute('parent')]));const findLayer=id=>{let p=parentById.get(id),guard=0;while(p&&guard++<20){if(layerIds.has(p))return p;p=parentById.get(p);}return layers[0].id;};imported.cells.forEach(c=>c.layerId=findLayer(c.id));let folders=[];try{const raw=model.getAttribute('localLayerFolders');if(raw)folders=JSON.parse(decodeURIComponent(raw));}catch{}
-      const supportedIds=new Set(['0',...layers.map(l=>l.id),...imported.cells.map(c=>c.id),'jandostudio-paint-layer']);const unsupported=[...model.querySelectorAll(':scope > root > mxCell')].filter(n=>n.getAttribute('id')&&!supportedIds.has(n.getAttribute('id'))).map(n=>new XMLSerializer().serializeToString(n));pages.push({id:d.getAttribute('id')||originalNewId('page'),name:d.getAttribute('name')||`Page-${pages.length+1}`,cells:imported.cells,page:{...DEFAULT_PAGE,...imported.page},paintData:imported.paintData||'',tagDefinitions:imported.tagDefinitions||defaultTagDefinitions(),layers,layerFolders:folders,activeLayerId:layers[0].id,viewX:DEFAULT_VIEW.x,viewY:DEFAULT_VIEW.y,zoom:DEFAULT_VIEW.zoom,unsupported});}
+      const supportedIds=new Set(['0','1',...layers.map(l=>l.id),...imported.cells.map(c=>c.id),'jandostudio-paint-layer']);
+      /* A pool's lanes live inside the pool rather than as cells of their own, so their ids were missing
+         from this list and every lane was kept as an unsupported cell and written out a second time on
+         export - a file draw.io then refuses to open, with "Duplicate ID". */
+      imported.cells.forEach(cell=>{if(cell.shape==='swimlane')(cell.lanes||[]).forEach(lane=>supportedIds.add(lane.id));});const unsupported=[...model.querySelectorAll(':scope > root > mxCell')].filter(n=>n.getAttribute('id')&&!supportedIds.has(n.getAttribute('id'))).map(n=>new XMLSerializer().serializeToString(n));pages.push({id:d.getAttribute('id')||originalNewId('page'),name:d.getAttribute('name')||`Page-${pages.length+1}`,cells:imported.cells,page:{...DEFAULT_PAGE,...imported.page},paintData:imported.paintData||'',tagDefinitions:imported.tagDefinitions||defaultTagDefinitions(),layers,layerFolders:folders,activeLayerId:layers[0].id,viewX:DEFAULT_VIEW.x,viewY:DEFAULT_VIEW.y,zoom:DEFAULT_VIEW.zoom,unsupported});}
     state.pages=pages;state.currentPageId=null;state.filename=normalizeFilename(filename);state.fileHandle=null;state.unsupportedByPage=Object.fromEntries(pages.map(p=>[p.id,p.unsupported||[]]));$('filename').value=state.filename;await v18LoadPage(doc.documentElement.getAttribute('localCurrentPageId')&&pages.some(p=>p.id===doc.documentElement.getAttribute('localCurrentPageId'))?doc.documentElement.getAttribute('localCurrentPageId'):pages[0].id);state.undo=[];state.redo=[];markSaved();showToast(`Opened ${state.filename} · ${pages.length} page${pages.length===1?'':'s'}`);
   }
   importDrawioXml=v18ParseAllPages;
@@ -13850,7 +13874,7 @@
     actualizeLaneSizes(pool);const horizontal=pool.orientation!=='vertical',byLane=new Map();children.forEach(cell=>{if(!byLane.has(cell.laneId))byLane.set(cell.laneId,[]);byLane.get(cell.laneId).push(cell);});
     const desired=Math.max(V2_ALPHA32_LANE_SIZE,...(pool.lanes||[]).map(lane=>{const items=byLane.get(lane.id)||[];return items.length?Math.max(...items.map(cell=>(horizontal?cell.h:cell.w)+60)):V2_ALPHA32_LANE_SIZE;}));
     pool.lanes.forEach(lane=>{lane.size=snapValue(Math.max(V2_ALPHA32_LANE_SIZE,desired));lane.collapsed=false;});
-    if(horizontal)pool.h=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0);else pool.w=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0);
+    if(horizontal)pool.h=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0)+(Number(pool.headerSize)||0);else pool.w=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0)+(Number(pool.headerSize)||0);
     return desired;
   }
   function v2Alpha32AutoLayoutPool(pool){
@@ -17680,7 +17704,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.33';
+  const JANDO_VERSION='2.1.0-alpha.34';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17760,7 +17784,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha33';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha34';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -18070,8 +18094,9 @@
     }
     if(!desired)return;
     pool.lanes.forEach(lane=>{lane.size=snapValue(desired);});
-    if(horizontal)pool.h=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0);
-    else pool.w=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0);
+    const header=Number(pool.headerSize)||0;
+    if(horizontal)pool.h=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0)+header;
+    else pool.w=pool.lanes.reduce((sum,lane)=>sum+Number(lane.size||0),0)+header;
     const byId=new Map(laneMetrics(pool).map(metric=>[metric.id,metric]));
     for(const [laneId,items] of byLane){
       const metric=byId.get(laneId);if(!metric)continue;
@@ -19458,7 +19483,9 @@
     const lengthOf=lane=>(vertical?lane.geom.w:lane.geom.h)||0;
     const fallback=lengthOf(sorted[index])||span/sorted.length;
     if(!(span>0))return fallback;
-    const start=index===0?0:offsetOf(sorted[index]);
+    /* Measured from this lane's own offset, so whatever sits above the first lane stays above it - that
+       gap is the pool's heading band, not part of lane one. */
+    const start=offsetOf(sorted[index]);
     const end=index===sorted.length-1?span:offsetOf(sorted[index+1]);
     const size=end-start;
     return size>1?size:fallback;
@@ -19507,6 +19534,7 @@
     }
     pool.lanes[order].size=Math.max(1,Number(pool.lanes[order].size)||1)+extra;
     if(horizontal)pool.h+=extra;else pool.w+=extra;
+    
     return true;
   }
 
@@ -19677,7 +19705,7 @@
   }
   /* Same principle as the connectors: find the labels that are genuinely covered and move only those, with
      the labels that are already clear handed over as reserved so they do not get landed on. */
-  function v21Alpha32TidyLabels(){
+  function v21Alpha32TidyLabels(pageIndex=-1){
     const shapes=v21Alpha32Shapes();
     const labelled=state.cells.filter(cell=>isEdge(cell)&&cell.label&&!isFullyLocked(cell));
     if(!labelled.length)return 0;
@@ -19685,43 +19713,70 @@
     for(const edge of labelled){const rect=v21Alpha32LabelRect(edge);if(rect)rects.set(edge.id,rect);}
     const drawn=new Map();
     for(const cell of state.cells)if(isEdge(cell))drawn.set(cell.id,v21Alpha32DrawnPath(cell));
-    const clashes=new Set();
     /* An imported label is where draw.io put it, which is usually touching its connector and often just
        clipping a shape. Judging those by a few square pixels moved 78 labels of 161 off positions that
        had just been matched to draw.io exactly, so a label has to be genuinely obscured to be moved: a
-       third of it under something, or another connector running through the text itself rather than
-       nicking a corner. */
+       third of it under something, or another connector running through the text itself. */
     const area=rect=>Math.max(1,rect.w*rect.h);
     const core=rect=>({x:rect.x+rect.w*0.3,y:rect.y+rect.h*0.3,w:rect.w*0.4,h:rect.h*0.4});
-    for(const [id,rect] of rects){
-      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>area(rect)*0.34)){clashes.add(id);continue;}
-      for(const [otherId,other] of rects)
-        if(otherId!==id&&v21Alpha32Overlap(rect,other)>Math.min(area(rect),area(other))*0.3){
-          clashes.add(id);clashes.add(otherId);
-        }
-      if(clashes.has(id))continue;
+    const obscured=(rect,selfId)=>{
+      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>area(rect)*0.34))return true;
+      for(const [otherId,other] of rects){
+        if(otherId===selfId)continue;
+        if(v21Alpha32Overlap(rect,other)>Math.min(area(rect),area(other))*0.3)return true;
+      }
       const middle=core(rect);
       for(const [edgeId,points] of drawn){
-        if(edgeId===id||points.length<2)continue;
-        let crossed=false;
-        for(let i=0;i<points.length-1&&!crossed;i++)
-          if(v21Alpha32SegmentHitsRect(points[i],points[i+1],middle))crossed=true;
-        if(crossed){clashes.add(id);break;}
+        if(edgeId===selfId||points.length<2)continue;
+        for(let i=0;i<points.length-1;i++)
+          if(v21Alpha32SegmentHitsRect(points[i],points[i+1],middle))return true;
       }
-    }
+      return false;
+    };
+    const clashes=new Set();
+    for(const [id,rect] of rects)if(obscured(rect,id))clashes.add(id);
     if(!clashes.size)return 0;
-    const reserved=[...rects].filter(([id])=>!clashes.has(id)).map(([,rect])=>rect);
-    v21Alpha15PlaceLabels(labelled.filter(edge=>clashes.has(edge.id)),reserved);
-    return clashes.size;
+    /* A label that came from the file has a place it is meant to be, alongside its own connector. Shift it
+       a few pixels off whatever is covering it rather than re-placing it from the middle of the line,
+       which is how the No on Restock? ended up in another lane entirely. */
+    let nudged=0;
+    for(const id of [...clashes]){
+      if(pageIndex<0||!v21Alpha33LabelAnchors.has(`${pageIndex}::${id}`))continue;
+      const edge=labelled.find(item=>item.id===id),rect=rects.get(id);
+      if(!edge||!rect)continue;
+      let landed=null;
+      for(const step of [14,-14,28,-28,42,-42,56,-56]){
+        for(const [dx,dy] of [[0,step],[step,0]]){
+          const trial={x:rect.x+dx,y:rect.y+dy,w:rect.w,h:rect.h};
+          if(!obscured(trial,id)){landed={dx,dy,trial};break;}
+        }
+        if(landed)break;
+      }
+      if(!landed)continue;
+      edge.labelOffset={x:(edge.labelOffset?.x||0)+landed.dx,y:(edge.labelOffset?.y||0)+landed.dy};
+      rects.set(id,landed.trial);
+      clashes.delete(id);
+      nudged++;
+    }
+    if(clashes.size){
+      const reserved=[...rects].filter(([id])=>!clashes.has(id)).map(([,rect])=>rect);
+      v21Alpha15PlaceLabels(labelled.filter(edge=>clashes.has(edge.id)),reserved);
+    }
+    return nudged+clashes.size;
   }
 
-  function v21Alpha32TidyPage(){
+  function v21Alpha32TidyPage(pageIndex=-1){
     const wasStraight=new Set(state.cells.filter(cell=>isEdge(cell)&&v21Alpha32IsStraight(cell)).map(cell=>cell.id));
     const contained=v21Alpha32ContainInLanes();
     v21Alpha32ShiftWaypoints(contained.moved);
     const restraightened=v21Alpha32Restraighten(wasStraight);
     const connectors=v21Alpha32ClearConnectors();
-    const labels=v21Alpha32TidyLabels();
+    /* A label's position is held as an offset from the midpoint of its connector, so moving a shape or
+       re-routing a connector leaves that offset pointing at nothing - which is how the No on Restock?
+       ended up adrift two lanes away. Put every imported label back on its line before working out which
+       ones are actually in the way. */
+    if(pageIndex>=0)v21Alpha33ApplyLabelAnchorsToPage(pageIndex);
+    const labels=v21Alpha32TidyLabels(pageIndex);
     return{enclosed:contained.enclosed,nudged:contained.nudged,grown:contained.grown,
       stuck:contained.stuck,restraightened,cleared:connectors.cleared,
       stubborn:connectors.stubborn,labels};
@@ -19732,13 +19787,15 @@
     const totals={enclosed:0,nudged:0,grown:0,stuck:0,restraightened:0,cleared:0,stubborn:0,labels:0,pages:0};
     const add=result=>{for(const key in result)totals[key]+=result[key];totals.pages++;};
     const keep=state.cells;
-    for(const page of state.pages||[]){
-      if(!Array.isArray(page.cells))continue;
-      state.cells=page.cells;
-      try{add(v21Alpha32TidyPage());}catch(error){console.warn('Tidy skipped a page',error);}
+    const pages=state.pages||[];
+    for(let index=0;index<pages.length;index++){
+      if(!Array.isArray(pages[index].cells))continue;
+      state.cells=pages[index].cells;
+      try{add(v21Alpha32TidyPage(index));}catch(error){console.warn('Tidy skipped a page',error);}
     }
     state.cells=keep;
-    try{add(v21Alpha32TidyPage());}catch(error){console.warn('Tidy skipped the open page',error);}
+    const current=pages.findIndex(page=>page.id===state.currentPageId);
+    try{add(v21Alpha32TidyPage(current<0?0:current));}catch(error){console.warn('Tidy skipped the open page',error);}
     return totals;
   }
 
@@ -19845,6 +19902,35 @@
     return placed;
   }
   window.JandoStudio.labelAnchors=()=>v21Alpha33LabelAnchors.size;
+
+  /* renderSwimlane is replaced outright further up, so the heading band is added as a layer on top of
+     whatever the current one draws rather than inside it. */
+  const v21Alpha34BaseRenderSwimlane=renderSwimlane;
+  renderSwimlane=function(cell,targetLayer=diagramLayer){
+    const group=v21Alpha34BaseRenderSwimlane(cell,targetLayer);
+    const header=Number(cell?.headerSize)||0;
+    if(!group||header<=0)return group;
+    const vertical=cell.orientation==='vertical';
+    const band=vertical
+      ?{x:cell.x,y:cell.y,width:header,height:cell.h}
+      :{x:cell.x,y:cell.y,width:cell.w,height:header};
+    const fill=cell.labelFill??(cell.fill&&cell.fill!=='none'?tint(cell.fill,-0.04):'#f6f7f9');
+    const stroke=cell.stroke??'#64748b';
+    group.appendChild(sEl('rect',{...band,
+      fill:fill==='none'?'transparent':fill,
+      stroke:stroke==='none'?'transparent':stroke,
+      'stroke-width':clamp(Number(cell.strokeWidth??1.5),0,12),
+      'vector-effect':'non-scaling-stroke','data-cell-id':cell.id,'data-pool-header':'1'}));
+    const hx=band.x+band.width/2,hy=band.y+band.height/2;
+    const heading=sEl('text',{x:hx,y:hy,
+      fill:cell.labelFontColor??cell.fontColor??'#1f2937',
+      'font-size':cell.fontSize||13,'font-family':'Arial, Helvetica, sans-serif','font-weight':700,
+      'text-anchor':'middle','dominant-baseline':'middle',
+      transform:vertical?`rotate(-90 ${hx} ${hy})`:undefined,'pointer-events':'none'});
+    heading.textContent=cell.label||'';
+    group.appendChild(heading);
+    return group;
+  };
 
   render();
 
