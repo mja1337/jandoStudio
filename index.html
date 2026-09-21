@@ -2217,7 +2217,7 @@
     const commonProps = {
       whiteSpace: 'wrap', html: '1', fillColor: '#ffffff', strokeColor: '#4b5563',
       strokeWidth: '2', fontColor: '#1f2937', fontSize: '14', align: 'center', verticalAlign: 'middle',
-      spacing: '6', opacity: '100'
+      spacing: '3', opacity: '100'
     };
     const def = SHAPE_DEFS[shape] || SHAPE_DEFS.rect;
     return { flags: [...(def.drawio.flags || [])], props: { ...commonProps, ...(def.drawio.props || {}), localShape: shape } };
@@ -2260,7 +2260,7 @@
     cell.underline = Boolean(cell.underline ?? (Number(cell.styleProps?.fontStyle || 0) & 4));
     cell.textAlign = ['left','center','right'].includes(cell.textAlign) ? cell.textAlign : (cell.styleProps?.align || 'center');
     cell.verticalAlign = ['top','middle','bottom'].includes(cell.verticalAlign) ? cell.verticalAlign : (cell.styleProps?.verticalAlign || 'middle');
-    cell.textPadding = Number.isFinite(Number(cell.textPadding)) ? Number(cell.textPadding) : Number(cell.styleProps?.spacing || 6);
+    cell.textPadding = Number.isFinite(Number(cell.textPadding)) ? Number(cell.textPadding) : Number(cell.styleProps?.spacing || 3);
     cell.lineSpacing = clamp(Number(cell.lineSpacing ?? cell.styleProps?.lineHeight ?? 1.22), 0.9, 2);
     cell.fillOpacity = clamp(Number(cell.fillOpacity ?? cell.styleProps?.fillOpacity ?? 100), 0, 100);
     cell.opacity = clamp(Number(cell.opacity ?? cell.styleProps?.opacity ?? 100), 10, 100);
@@ -2284,7 +2284,7 @@
       id: newId('cell'), kind: 'vertex', shape, x, y, w, h, label: def.label || '',
       fill: shape === 'text' ? 'none' : '#ffffff', stroke: shape === 'text' ? 'none' : '#4b5563',
       strokeWidth: shape === 'text' ? 0 : 2, fontColor: '#1f2937', fontSize: shape === 'text' ? 18 : 14, rotation: 0,
-      bold: false, italic: false, underline: false, textAlign: 'center', verticalAlign: 'middle', textPadding: 6, lineSpacing: 1.22,
+      bold: false, italic: false, underline: false, textAlign: 'center', verticalAlign: 'middle', textPadding: 3, lineSpacing: 1.22,
       fillOpacity: 100, opacity: 100, borderStyle: shape === 'external' ? 'dashed' : 'solid', cornerRadius: style.props.arcSize ? Number(style.props.arcSize) : 0,
       styleFlags: style.flags, styleProps: style.props, containerId: null, laneId: null, parentGroupId: null,
       locks: { position: false, size: false, text: false, all: false }, tags: [], qualityCategory: state.activeQualityCategory || '', taskSystemRef: '', businessSystemRef: '', importedFallback: false
@@ -7162,7 +7162,7 @@
       const def=defaultStyle(cell.shape);flags.push(...def.flags);Object.assign(props,def.props);
     }
     if(!cell.importedFallback)props.localShape=cell.shape;props.whiteSpace='wrap';props.html='1';props.fillColor=cell.fill||'none';props.strokeColor=cell.stroke||'none';props.strokeWidth=String(cell.strokeWidth??1);
-    props.fontColor=cell.fontColor||'#1f2937';props.fontSize=String(cell.fontSize||14);props.align=cell.textAlign||'center';props.verticalAlign=cell.verticalAlign||'middle';props.spacing=String(cell.textPadding??6);props.lineHeight=String(cell.lineSpacing??1.22);props.fillOpacity=String(cell.fillOpacity??100);props.opacity=String(cell.opacity??100);
+    props.fontColor=cell.fontColor||'#1f2937';props.fontSize=String(cell.fontSize||14);props.align=cell.textAlign||'center';props.verticalAlign=cell.verticalAlign||'middle';props.spacing=String(cell.textPadding??3);props.lineHeight=String(cell.lineSpacing??1.22);props.fillOpacity=String(cell.fillOpacity??100);props.opacity=String(cell.opacity??100);
     const fontStyle=(cell.bold?1:0)+(cell.italic?2:0)+(cell.underline?4:0);if(fontStyle)props.fontStyle=String(fontStyle);else delete props.fontStyle;
     if(cell.borderStyle==='solid'){delete props.dashed;delete props.dashPattern;}else{props.dashed='1';props.dashPattern=cell.borderStyle==='dotted'?'1 4':'8 6';}
     if(['rounded','terminator','system','external'].includes(cell.shape)){props.rounded='1';props.arcSize=String(cell.shape==='terminator'?50:cell.cornerRadius||12);}else if(!cell.importedFallback){props.rounded='0';delete props.arcSize;}
@@ -7659,7 +7659,7 @@
         bold:Boolean(fontStyle&1),italic:Boolean(fontStyle&2),underline:Boolean(fontStyle&4),
         textAlign:['left','center','right'].includes(raw.styleProps.align)?raw.styleProps.align:'center',
         verticalAlign:['top','middle','bottom'].includes(raw.styleProps.verticalAlign)?raw.styleProps.verticalAlign:'middle',
-        textPadding:Number(raw.styleProps.spacing||6),lineSpacing:Number(raw.styleProps.lineHeight||1.22),fillOpacity:Number(raw.styleProps.fillOpacity||100),opacity:Number(raw.styleProps.opacity||100),borderStyle:lineStyleFromProps(raw.styleProps),cornerRadius:Number(raw.styleProps.arcSize||0),
+        textPadding:Number(raw.styleProps.spacing||3),lineSpacing:Number(raw.styleProps.lineHeight||1.22),fillOpacity:Number(raw.styleProps.fillOpacity||100),opacity:Number(raw.styleProps.opacity||100),borderStyle:lineStyleFromProps(raw.styleProps),cornerRadius:Number(raw.styleProps.arcSize||0),
         styleFlags: raw.styleFlags, styleProps: raw.styleProps,
         containerId: ancestorPool(raw), laneId: ancestorLane(raw), parentGroupId: ancestorGroup(raw), tags:(raw.element.getAttribute('localTags')||'').split(',').filter(Boolean), qualityCategory:raw.element.getAttribute('localQualityCategory')||'', taskSystemRef:raw.element.getAttribute('localTaskSystemRef')||'', businessSystemRef:raw.element.getAttribute('localBusinessSystemRef')||'',
         locks:{position:raw.element.getAttribute('localLockPosition')==='1'||raw.styleProps.movable==='0',size:raw.element.getAttribute('localLockSize')==='1'||raw.styleProps.resizable==='0',text:raw.element.getAttribute('localLockText')==='1'||raw.styleProps.editable==='0',all:raw.element.getAttribute('localLockAll')==='1'},
@@ -8397,7 +8397,7 @@
   const V191_ARROW_MAP={none:'none',block:'block',classic:'classic',open:'open',thin:'openThin',diamond:'diamond',diamondOpen:'diamondThin',oval:'oval',tee:'ERone',cross:'cross'};
   const V191_FILLED=new Set(['block','classic','diamond','oval']);
   const V191_PRESETS={
-    standard:{label:'Standard flow',stroke:'#475467',strokeWidth:2,lineStyle:'solid',rounded:false,startArrow:'none',endArrow:'block',startSize:10,endSize:10},
+    standard:{label:'Standard flow',stroke:'#475467',strokeWidth:0.67,lineStyle:'solid',rounded:false,startArrow:'none',endArrow:'block',startSize:10,endSize:10},
     dependency:{label:'Dependency',stroke:'#3976d4',strokeWidth:2,lineStyle:'dashed',rounded:true,startArrow:'none',endArrow:'open',startSize:9,endSize:10},
     handoff:{label:'Team handoff',stroke:'#7c3aed',strokeWidth:2.5,lineStyle:'solid',rounded:true,startArrow:'none',endArrow:'classic',startSize:10,endSize:12},
     approval:{label:'Approval',stroke:'#15803d',strokeWidth:2.5,lineStyle:'solid',rounded:true,startArrow:'none',endArrow:'diamond',startSize:10,endSize:12},
@@ -17103,6 +17103,17 @@
   const V21A8_DRAW_TOOLS=new Set(['pencil','brush','eraser']);
   let v21a8Stroke=null,v21a8CompositeFrame=0,v21a8Finishing=false;
 
+  /* Imported draw.io pages are hybrid pages once annotated: the diagram SVG remains visible below Paint.
+     Depending on browser stacking, a pointer over an SVG shape can therefore target the SVG rather than
+     the transparent Paint canvas. Treat that exact canvas area as Paint while Image mode is active; this
+     keeps the diagram interactive in Diagram mode and avoids swallowing sidebar/overlay clicks. */
+  function v21a8PaintSurfaceEvent(event){
+    if(event.target===paintCanvas)return true;
+    if(state.workspace!=='paint'||!(event.target instanceof Node)||!svg.contains(event.target))return false;
+    const rect=paintCanvas.getBoundingClientRect();
+    return event.clientX>=rect.left&&event.clientX<=rect.right&&event.clientY>=rect.top&&event.clientY<=rect.bottom;
+  }
+
   function v21a8VisibleRasterLayers(){return v111RasterLayers().filter(layer=>layer.visible!==false);}
   function v21a8FastPreviewEligible(layer){
     if(!state.page?.hybridDiagram||!layer||v21a8VisibleRasterLayers().length!==1)return false;
@@ -17134,7 +17145,7 @@
     action.lastLocal=local;action.lastPage=page;v111Invalidate(layer);if(!action.fastPreview)v21a8ScheduleComposite();return true;
   }
   function v21a8BeginStroke(event){
-    if(event.target!==paintCanvas||state.workspace!=='paint'||!V21A8_DRAW_TOOLS.has(state.paintTool)||state.spaceDown||(event.button!==0&&event.button!==2))return false;
+    if(!v21a8PaintSurfaceEvent(event)||state.workspace!=='paint'||!V21A8_DRAW_TOOLS.has(state.paintTool)||state.spaceDown||(event.button!==0&&event.button!==2))return false;
     event.preventDefault();event.stopImmediatePropagation();closePaintTextEditor?.(true);
     const tool=state.paintTool;if(V2_ALPHA33_SIZED_TOOLS.has(tool))v2Alpha33ApplyToolSize(tool,v2Alpha33ToolSizes[tool]);
     const layer=v2Alpha33EnsureTargetForTool(tool),cache=layer&&v111Cache.get(v111LayerKey(layer));
@@ -18254,8 +18265,11 @@
           const cx=anchor.x+dx,cy=anchor.y+dy;
           const rect={x:cx-box.w/2,y:cy-box.h/2,w:box.w,h:box.h};
           let score=Math.hypot(cx-base.x,cy-base.y)*0.05;
-          for(const shape of shapes)if(v21Alpha15RectOverlap(rect,shape)>25)score+=1000;
-          for(const other of placed)if(v21Alpha15RectOverlap(rect,other)>25)score+=900;
+          /* A label can sit on its own connector, but never on a shape or another label. One pixel is
+             tolerated for rounded-coordinate seams only; the old 25px allowance was enough to hide a
+             short decision label inside a process box. */
+          for(const shape of shapes)if(v21Alpha15RectOverlap(rect,shape)>1)score+=1000;
+          for(const other of placed)if(v21Alpha15RectOverlap(rect,other)>1)score+=900;
           for(const segment of segments){
             if(segment.id===edge.id)continue;
             if(v2Alpha44SegmentHitsRect(segment.a,segment.b,rect))score+=80;
@@ -19830,17 +19844,16 @@
     for(const edge of labelled){const rect=v21Alpha32LabelRect(edge);if(rect)rects.set(edge.id,rect);}
     const drawn=new Map();
     for(const cell of state.cells)if(isEdge(cell))drawn.set(cell.id,v21Alpha32DrawnPath(cell));
-    /* An imported label is where draw.io put it, which is usually touching its connector and often just
-       clipping a shape. Judging those by a few square pixels moved 78 labels of 161 off positions that
-       had just been matched to draw.io exactly, so a label has to be genuinely obscured to be moved: a
-       third of it under something, or another connector running through the text itself. */
+    /* Connector text is allowed to sit on its own line, but not on a diagram shape. Even a narrow overlap
+       can conceal an important word (for example "No invoice"), so only a one-pixel rounding seam is
+       accepted. Labels that need moving are re-placed against positions on their own connector below. */
     const area=rect=>Math.max(1,rect.w*rect.h);
     const core=rect=>({x:rect.x+rect.w*0.3,y:rect.y+rect.h*0.3,w:rect.w*0.4,h:rect.h*0.4});
     const obscured=(rect,selfId)=>{
-      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>area(rect)*0.34))return true;
+      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>1))return true;
       for(const [otherId,other] of rects){
         if(otherId===selfId)continue;
-        if(v21Alpha32Overlap(rect,other)>Math.min(area(rect),area(other))*0.3)return true;
+        if(v21Alpha32Overlap(rect,other)>1)return true;
       }
       const middle=core(rect);
       for(const [edgeId,points] of drawn){
@@ -20568,11 +20581,49 @@
   v21Alpha46ModalLayer.textContent='.modal-backdrop{z-index:10050!important}';
   document.head.appendChild(v21Alpha46ModalLayer);
 
+  /* Page changes used to restore the view but leave the selected Pencil/Brush pointing at the raster
+     layer from the previous page. The first click then had nothing to draw into (and, when the SVG won
+     hit-testing, no cursor at all). Prepare the current page's editable Paint layer before it is exposed
+     and keep the cursor following pointer events that land on the visible diagram beneath it. */
+  async function v21Alpha47PreparePaintSurface(){
+    if(state.workspace!=='paint'||!V21A8_DRAW_TOOLS.has(state.paintTool))return false;
+    const layer=v2Alpha33EnsureTargetForTool(state.paintTool);
+    if(!layer)return false;
+    await v111EnsureLayerCache(layer);
+    if(v110ImageDoc())v111Composite(false);
+    updatePaintSurfacePosition();
+    v112UpdatePaintCursor();
+    v2Alpha33UpdateTargetUi?.();
+    return true;
+  }
+  const v21Alpha47BaseLoadPage=v18LoadPage;
+  v18LoadPage=async function(id){
+    const result=await v21Alpha47BaseLoadPage(id);
+    await v21Alpha47PreparePaintSurface();
+    updateUi();
+    return result;
+  };
+  const v21Alpha47BaseWorkspace=setWorkspace;
+  setWorkspace=function(workspace){
+    const result=v21Alpha47BaseWorkspace(workspace);
+    if(workspace==='paint')v21Alpha47PreparePaintSurface().then(()=>updateUi()).catch(error=>console.warn('Paint layer preparation failed',error));
+    return result;
+  };
+  const v21Alpha47TrackPaintCursor=event=>{
+    if(state.workspace==='paint'&&V21A8_DRAW_TOOLS.has(state.paintTool)&&v21a8PaintSurfaceEvent(event))v112UpdatePaintCursor(event);
+  };
+  canvasWrap.addEventListener('pointerenter',v21Alpha47TrackPaintCursor,true);
+  canvasWrap.addEventListener('pointermove',v21Alpha47TrackPaintCursor,true);
+  canvasWrap.addEventListener('pointerleave',event=>{
+    if(event.target===paintCanvas||event.target===svg)$('v112PaintCursor')?.classList.remove('visible');
+  },true);
+
   /* Everything held back during boot, run once now that there is something worth looking at. */
   jandoBooting = false;
   updateUi();
   updateViewBox();
   render();
+  v21Alpha47PreparePaintSurface().then(()=>updateUi()).catch(error=>console.warn('Initial Paint layer preparation failed',error));
 
 })();
 </script>
