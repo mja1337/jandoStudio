@@ -17780,7 +17780,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.41';
+  const JANDO_VERSION='2.1.0-alpha.42';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17860,7 +17860,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha41';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha42';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20168,63 +20168,92 @@
     return result;
   };
 
-  /* A lane's title runs along the lane - rotated for a row, across the top for a column - so a long name
-     needs the lane to be long enough to hold it. It was drawn regardless, which cut the start off and ran
-     the end into the lane above. Grow the lane to fit instead; lanes after it move down with their
-     contents, the same as any other lane resize. */
-  function v21Alpha41LaneTitleExtent(pool,lane){
-    const fontSize=Number(pool.fontSize)||13;
-    const text=`${lane.collapsed?'▸ ':''}${lane.name||''}${lane.hidden?' · hidden':''}`;
-    return Math.ceil(String(text).length*Math.max(4.8,fontSize*0.56))+18;
+  /* A lane's title runs along the lane - rotated for a row, across the top for a column - and was drawn
+     whatever the lane's size, so a long name had its start cut off and its end run into the lane above.
+     Growing the lane to fit was the first attempt and it was the wrong trade: on a 30 page file it moved
+     88 shapes and bent 77 connectors off where draw.io has them, because a shape's lane moved while the
+     bends its connector came in with did not. The title is fitted to the lane instead, which costs
+     nothing but the size of the text and leaves every coordinate in the file alone. */
+  function v21Alpha41TitleLimit(pool,metric){
+    const vertical=pool.orientation==='vertical';
+    if(!vertical&&pool.titleDirection==='horizontal')
+      return Math.max(12,(Number(pool.titleWidth)||52)-8);
+    return Math.max(12,(vertical?metric.width:metric.height)-14);
   }
-  function v21Alpha41FitLaneTitles(pool){
-    if(!pool||pool.shape!=='swimlane'||isFullyLocked(pool)||pool.locks?.size)return false;
-    const horizontal=pool.orientation!=='vertical';
-    /* A row whose title reads across rather than along it overflows sideways, which a taller lane would
-       not help with. */
-    if(horizontal&&pool.titleDirection==='horizontal')return false;
-    const moved=new Map();
-    let changed=false;
-    for(let pass=0;pass<(pool.lanes?.length||0)+2;pass++){
-      const metrics=laneMetrics(pool);
-      let grew=false;
-      for(const metric of metrics){
-        const extent=horizontal?metric.height:metric.width;
-        const needed=v21Alpha41LaneTitleExtent(pool,metric.lane);
-        if(extent>=needed-0.5)continue;
-        if(v21Alpha32GrowLane(pool,metric.id,Math.ceil(needed-extent),moved)){grew=true;changed=true;break;}
-      }
-      if(!grew)break;
+  /* Measured on a canvas rather than with getComputedTextLength, because the swimlane is drawn into a
+     group that has not been put in the document yet and a detached element measures as zero. */
+  let v21Alpha41Measure=null;
+  function v21Alpha41TextWidth(text,size,weight){
+    if(!v21Alpha41Measure)v21Alpha41Measure=document.createElement('canvas').getContext('2d');
+    if(!v21Alpha41Measure)return 0;
+    v21Alpha41Measure.font=`${weight||600} ${size}px Arial, Helvetica, sans-serif`;
+    return v21Alpha41Measure.measureText(String(text||'')).width;
+  }
+  function v21Alpha41SplitTwo(text,size,weight){
+    const words=String(text||'').trim().split(/\s+/);
+    if(words.length<2)return null;
+    let best=null;
+    for(let cut=1;cut<words.length;cut++){
+      const head=words.slice(0,cut).join(' '),tail=words.slice(cut).join(' ');
+      const widest=Math.max(v21Alpha41TextWidth(head,size,weight),v21Alpha41TextWidth(tail,size,weight));
+      if(!best||widest<best.widest)best={widest,lines:[head,tail]};
     }
-    if(changed)v21Alpha32ShiftWaypoints(moved);
-    return changed;
+    return best;
   }
-  function v21Alpha41FitAllLaneTitles(){
-    let changed=false;
-    for(const cell of state.cells)
-      if(isVertex(cell)&&cell.shape==='swimlane'&&v21Alpha41FitLaneTitles(cell))changed=true;
-    return changed;
+  /* A title too long for its lane is set on two lines across the title strip before it is shrunk, and only
+     trimmed when neither will do. The strip is wide enough for two lines at the normal size, so the usual
+     answer is the whole title, still readable, with nothing in the file moved. */
+  function v21Alpha41LayoutTitle(text,limit,cross,baseSize,weight){
+    const floor=9;
+    for(let size=baseSize;size>=floor;size-=0.5){
+      if(v21Alpha41TextWidth(text,size,weight)<=limit)return{size,lines:[text]};
+      const lineHeight=size*1.16;
+      if(lineHeight*2<=cross){
+        const pair=v21Alpha41SplitTwo(text,size,weight);
+        if(pair&&pair.widest<=limit)return{size,lines:pair.lines};
+      }
+    }
+    let trimmed=String(text||'');
+    while(trimmed.length>1&&v21Alpha41TextWidth(`${trimmed}…`,floor,weight)>limit)trimmed=trimmed.slice(0,-1);
+    return{size:floor,lines:[`${trimmed.replace(/\s+$/,'')}…`]};
   }
-  /* Run after the render rather than inside it, so no geometry changes underneath the drawing, and on a
-     timer rather than a frame - a frame never arrives while the window is in the background, which has
-     stalled work in this app before. Growing is idempotent, so the re-render settles immediately. */
-  let v21Alpha41Pending=false;
-  function v21Alpha41ScheduleLaneTitleFit(){
-    if(v21Alpha41Pending)return;
-    v21Alpha41Pending=true;
-    setTimeout(()=>{
-      v21Alpha41Pending=false;
-      try{if(v21Alpha41FitAllLaneTitles())render();}
-      catch(error){console.warn('Lane titles could not be fitted',error);}
-    },0);
+  function v21Alpha41FitTitleText(label,limit,cross,vertical){
+    if(!label)return;
+    const weight=label.getAttribute('font-weight')||600;
+    const baseSize=Number(label.getAttribute('font-size'))||13;
+    const text=label.textContent||'';
+    if(!text.trim())return;
+    if(v21Alpha41TextWidth(text,baseSize,weight)<=limit)return;
+    const layout=v21Alpha41LayoutTitle(text,limit,cross,baseSize,weight);
+    label.setAttribute('font-size',String(layout.size));
+    label.textContent=layout.lines[0];
+    if(layout.lines.length<2)return;
+    /* The second line sits beside the first across the strip. For a rotated title that is an offset in x,
+       which the rotation turns into the perpendicular; for an upright one it is an offset in y. */
+    const shift=layout.size*0.58;
+    const axis=vertical?'y':'x';
+    const centre=Number(label.getAttribute(axis))||0;
+    label.setAttribute(axis,String(centre-shift));
+    const second=label.cloneNode(false);
+    second.setAttribute(axis,String(centre+shift));
+    second.textContent=layout.lines[1];
+    label.after(second);
   }
-  const v21Alpha41BaseRender=render;
-  render=function(){
-    const result=v21Alpha41BaseRender.apply(this,arguments);
-    v21Alpha41ScheduleLaneTitleFit();
-    return result;
+  const v21Alpha41BaseRenderSwimlane=renderSwimlane;
+  renderSwimlane=function(cell,targetLayer=diagramLayer){
+    const group=v21Alpha41BaseRenderSwimlane(cell,targetLayer);
+    if(!group||cell?.shape!=='swimlane')return group;
+    const byId=new Map(laneMetrics(cell).map(metric=>[metric.id,metric]));
+    for(const strip of group.querySelectorAll('rect[data-lane-title-id]')){
+      const metric=byId.get(strip.getAttribute('data-lane-title-id'));
+      const label=strip.nextElementSibling;
+      if(!metric||!label||label.tagName.toLowerCase()!=='text')continue;
+      const vertical=cell.orientation==='vertical';
+      const cross=Math.max(10,(Number(strip.getAttribute(vertical?'height':'width'))||52)-6);
+      v21Alpha41FitTitleText(label,v21Alpha41TitleLimit(cell,metric),cross,vertical);
+    }
+    return group;
   };
-  window.JandoStudio.fitLaneTitles=()=>v21Alpha41FitAllLaneTitles();
 
   render();
 
