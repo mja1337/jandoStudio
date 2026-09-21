@@ -18079,18 +18079,18 @@
       width=Math.min(maxWidth,Math.round(width+40));
       lines=measure(width);
     }
-    return{w:width,h:Math.ceil(lines.length*lineHeight+padding*2)+2,lines:lines.length};
+    return{w:width,h:Math.ceil(lines.length*lineHeight+padding*2)+2,lines:lines.length,padding};
   }
   /* draw.io draws a connector's label as plain text. A 64px-wide bordered card around the word "No" reads
      as a shape in its own right and covers whatever it happens to sit over, so the box is only as big as
      the text needs, has no outline, and keeps a white backing just so the line behind stays readable. */
   function v21Alpha14LabelBox(text,fontSize){
-    /* The estimate has to be generous enough that a label draw.io fits on one line does not wrap here -
-       two lines of text cover more than one wider line does. */
-    const charWidth=Math.max(5.4,fontSize*0.62);
-    const natural=Math.round(String(text||'').length*charWidth+8);
-    return v21Alpha14FitBox(text,{fontSize,padding:3,width:Math.min(300,natural),
-      minWidth:16,maxWidth:300,maxLines:3});
+    /* Imported diagrams use a white backing behind connector text. Keep it almost flush to the glyphs and
+       cap long labels so they wrap instead of becoming a broad white strip across nearby shapes. */
+    const padding=1,charWidth=Math.max(5.1,fontSize*0.58);
+    const natural=Math.ceil(String(text||'').length*charWidth+padding*2);
+    return v21Alpha14FitBox(text,{fontSize,padding,width:Math.min(190,natural),
+      minWidth:12,maxWidth:190,maxLines:3});
   }
   const v21Alpha14BaseRenderEdge=renderEdge;
   renderEdge=function(edge,targetLayer=diagramLayer){
@@ -18107,7 +18107,7 @@
     labelGroup.appendChild(sEl('rect',{x,y,width:box.w,height:box.h,rx:0,class:'edge-label-hit',
       fill:'#ffffff',stroke:'none','stroke-width':0}));
     appendWrappedText(labelGroup,edge.label,x,y,box.w,box.h,
-      {fontSize,color:edge.fontColor||'#1f2937',padding:3});
+      {fontSize,color:edge.fontColor||'#1f2937',padding:box.padding});
     return group;
   };
 
@@ -18250,39 +18250,44 @@
         total+=Math.abs(path[i+1].x-path[i].x)+Math.abs(path[i+1].y-path[i].y);acc.push(total);
       }
       if(!total)continue;
-      /* The wide ring is a last resort. Nothing beyond the first few ever wins on its own, because score
-         counts distance from the connector, but two labels ended up exactly on top of each other when every
-         near position was taken and there was nothing further out to fall back to. */
+      /* Include enough of the connector's path and nearby offsets to find a clear spot on busy imports.
+         A label may sit on its own connector, but must never cover a shape or another label. */
       const offsets=[[0,0],[0,-(box.h/2+12)],[0,box.h/2+12],[0,-(box.h+24)],[0,box.h+24],
         [-(box.w/2+16),0],[box.w/2+16,0],[0,-(box.h*1.5+34)],[0,box.h*1.5+34],
         [-(box.w/2+16),-(box.h+24)],[box.w/2+16,-(box.h+24)],
         [-(box.w/2+16),box.h+24],[box.w/2+16,box.h+24],
-        [0,-(box.h*2.5+52)],[0,box.h*2.5+52],[-(box.w+36),0],[box.w+36,0]];
-      let best=null;
-      for(const t of [0.5,0.42,0.58,0.34,0.66,0.26,0.74]){
+        [0,-(box.h*2.5+52)],[0,box.h*2.5+52],[-(box.w+36),0],[box.w+36,0],
+        [0,-(box.h*3+72)],[0,box.h*3+72],[-(box.w*1.5+56),0],[box.w*1.5+56,0]];
+      let best=null,fallback=null;
+      for(const t of [0.5,0.44,0.56,0.38,0.62,0.32,0.68,0.26,0.74,0.2,0.8,0.14,0.86]){
         const anchor=v21Alpha15PointAt(path,acc,total,t);
         for(const [dx,dy] of offsets){
           const cx=anchor.x+dx,cy=anchor.y+dy;
           const rect={x:cx-box.w/2,y:cy-box.h/2,w:box.w,h:box.h};
           let score=Math.hypot(cx-base.x,cy-base.y)*0.05;
-          /* A label can sit on its own connector, but never on a shape or another label. One pixel is
-             tolerated for rounded-coordinate seams only; the old 25px allowance was enough to hide a
-             short decision label inside a process box. */
-          for(const shape of shapes)if(v21Alpha15RectOverlap(rect,shape)>1)score+=1000;
-          for(const other of placed)if(v21Alpha15RectOverlap(rect,other)>1)score+=900;
+          /* A one-pixel seam is rounding noise. Anything larger is a hard rejection: its white backing
+             would otherwise hide the shape's own label, exactly as it did to \"No Invoice\". */
+          const hitsShape=shapes.some(shape=>v21Alpha15RectOverlap(rect,shape)>1);
+          const hitsLabel=placed.some(other=>v21Alpha15RectOverlap(rect,other)>1);
+          if(hitsShape||hitsLabel){
+            const penalty=(hitsShape?1000:0)+(hitsLabel?900:0)+score;
+            if(!fallback||penalty<fallback.score)fallback={score:penalty,cx,cy,rect};
+            continue;
+          }
           for(const segment of segments){
             if(segment.id===edge.id)continue;
             if(v2Alpha44SegmentHitsRect(segment.a,segment.b,rect))score+=80;
           }
           if(!best||score<best.score)best={score,cx,cy,rect};
-          if(best.score<1)break;
         }
-        if(best&&best.score<1)break;
       }
+      /* The fallback is only for impossibly dense hand-drawn pages; normal imported diagrams always take
+         a clear candidate above. */
+      best=best||fallback;
       if(!best)continue;
       edge.labelOffset={x:Math.round(best.cx-base.x),y:Math.round(best.cy-base.y)};
       placed.push(best.rect);
-      if(best.score<1)clear++;
+      if(best.score<900)clear++;
     }
     return clear;
   }
