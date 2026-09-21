@@ -4341,7 +4341,10 @@
     svg.setAttribute('viewBox', `${state.viewX} ${state.viewY} ${width} ${height}`);
     $('zoomLabel').textContent = `${Math.round(state.zoom * 100)}%`;
     const objectCount=state.cells.filter(isVertex).length, connectorCount=state.cells.filter(isEdge).length, assignedTags=state.cells.filter(isVertex).reduce((sum,cell)=>sum+(cell.tags||[]).length,0);
-    $('statusSummary').textContent = `v${APP_VERSION} · ${state.grid ? `Grid ${state.gridSize}px` : 'Grid off'} · ${objectCount} objects · ${connectorCount} links · ${assignedTags} tags`;
+    /* No version here. It is in the corner of the toolbar already, and every alpha layer since has
+       rewritten this one with a regex that matched the previous layer's output, so what actually reached
+       the status bar was the three most recent versions spliced together. */
+    $('statusSummary').textContent = `${state.grid ? `Grid ${state.gridSize}px` : 'Grid off'} · ${objectCount} objects · ${connectorCount} links · ${assignedTags} tags`;
     const zoomPct=Math.round(state.zoom*100); $('zoomSlider').value=String(clamp(zoomPct,20,300)); $('bottomZoomReset').textContent=`${zoomPct}%`;
     positionInlineEditor();
     updatePaintSurfacePosition();
@@ -17777,7 +17780,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.40';
+  const JANDO_VERSION='2.1.0-alpha.41';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17857,7 +17860,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha40';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha41';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20147,6 +20150,81 @@
     });
   });
   window.JandoStudio.pasteImage=file=>v21Alpha40PasteImage(file);
+
+  /* ================= JandoStudio v2.1.0-alpha.41 status bar and lane titles ================= */
+
+  /* Each alpha layer rewrites the status summary's version with replace(/v[^ ·]+/), and the replacement
+     it writes is itself matched by the next layer's regex, so eighteen of them spliced into one string:
+     "v2.0.0-alpha.2.27.0.0-alpha.2.23.0.0-alpha.2.21". The version has been taken out of the summary at
+     source; this clears anything a future layer puts back. */
+  const v21Alpha41BaseUpdateViewBox=updateViewBox;
+  updateViewBox=function(){
+    const result=v21Alpha41BaseUpdateViewBox.apply(this,arguments);
+    const summary=$('statusSummary');
+    if(summary){
+      const cleaned=summary.textContent.replace(/^\s*v[^·]*·\s*/,'');
+      if(cleaned!==summary.textContent)summary.textContent=cleaned;
+    }
+    return result;
+  };
+
+  /* A lane's title runs along the lane - rotated for a row, across the top for a column - so a long name
+     needs the lane to be long enough to hold it. It was drawn regardless, which cut the start off and ran
+     the end into the lane above. Grow the lane to fit instead; lanes after it move down with their
+     contents, the same as any other lane resize. */
+  function v21Alpha41LaneTitleExtent(pool,lane){
+    const fontSize=Number(pool.fontSize)||13;
+    const text=`${lane.collapsed?'▸ ':''}${lane.name||''}${lane.hidden?' · hidden':''}`;
+    return Math.ceil(String(text).length*Math.max(4.8,fontSize*0.56))+18;
+  }
+  function v21Alpha41FitLaneTitles(pool){
+    if(!pool||pool.shape!=='swimlane'||isFullyLocked(pool)||pool.locks?.size)return false;
+    const horizontal=pool.orientation!=='vertical';
+    /* A row whose title reads across rather than along it overflows sideways, which a taller lane would
+       not help with. */
+    if(horizontal&&pool.titleDirection==='horizontal')return false;
+    const moved=new Map();
+    let changed=false;
+    for(let pass=0;pass<(pool.lanes?.length||0)+2;pass++){
+      const metrics=laneMetrics(pool);
+      let grew=false;
+      for(const metric of metrics){
+        const extent=horizontal?metric.height:metric.width;
+        const needed=v21Alpha41LaneTitleExtent(pool,metric.lane);
+        if(extent>=needed-0.5)continue;
+        if(v21Alpha32GrowLane(pool,metric.id,Math.ceil(needed-extent),moved)){grew=true;changed=true;break;}
+      }
+      if(!grew)break;
+    }
+    if(changed)v21Alpha32ShiftWaypoints(moved);
+    return changed;
+  }
+  function v21Alpha41FitAllLaneTitles(){
+    let changed=false;
+    for(const cell of state.cells)
+      if(isVertex(cell)&&cell.shape==='swimlane'&&v21Alpha41FitLaneTitles(cell))changed=true;
+    return changed;
+  }
+  /* Run after the render rather than inside it, so no geometry changes underneath the drawing, and on a
+     timer rather than a frame - a frame never arrives while the window is in the background, which has
+     stalled work in this app before. Growing is idempotent, so the re-render settles immediately. */
+  let v21Alpha41Pending=false;
+  function v21Alpha41ScheduleLaneTitleFit(){
+    if(v21Alpha41Pending)return;
+    v21Alpha41Pending=true;
+    setTimeout(()=>{
+      v21Alpha41Pending=false;
+      try{if(v21Alpha41FitAllLaneTitles())render();}
+      catch(error){console.warn('Lane titles could not be fitted',error);}
+    },0);
+  }
+  const v21Alpha41BaseRender=render;
+  render=function(){
+    const result=v21Alpha41BaseRender.apply(this,arguments);
+    v21Alpha41ScheduleLaneTitleFit();
+    return result;
+  };
+  window.JandoStudio.fitLaneTitles=()=>v21Alpha41FitAllLaneTitles();
 
   render();
 
