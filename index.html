@@ -7091,9 +7091,7 @@
       if (key === 'v' && event.altKey) { event.preventDefault(); pasteStyle(); return; }
       if (key === 'c') { event.preventDefault(); copySelection(); return; }
       if (key === 'x') { event.preventDefault(); cutSelection(); return; }
-      /* Not prevented, so the browser still raises a paste and an image on the system clipboard can
-         reach it. Pasting shapes is armed on a short timer instead and cancelled if an image turns up. */
-      if (key === 'v') { v21Alpha40ArmShapePaste(); return; }
+      if (key === 'v') { event.preventDefault(); pasteSelection(); return; }
       if (key === 'd') { event.preventDefault(); duplicateSelection(); return; }
       if (key === 'a') { event.preventDefault(); selectAll(); return; }
     }
@@ -17780,7 +17778,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.42';
+  const JANDO_VERSION='2.1.0-alpha.43';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17860,7 +17858,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha42';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha43';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20081,6 +20079,8 @@
   function v21Alpha40EditingText(){
     const active=document.activeElement;
     if(!active||active===document.body)return false;
+    /* The catcher is editable by necessity, but focus resting on it is not the user typing. */
+    if(active.id==='v21a40PasteCatcher')return false;
     if(active.isContentEditable)return true;
     return ['INPUT','TEXTAREA','SELECT'].includes(active.tagName);
   }
@@ -20138,16 +20138,74 @@
     v21Alpha40ShowImageWorkspace();
     return true;
   }
-  document.addEventListener('paste',event=>{
-    if(v21Alpha40EditingText())return;
+  function v21Alpha40HandlePaste(event){
     const file=v21Alpha40ClipboardImage(event.clipboardData);
-    if(!file)return;
+    if(!file)return false;
     v21Alpha40CancelShapePaste();
     event.preventDefault();
     v21Alpha40PasteImage(file).catch(error=>{
       console.warn('Clipboard image could not be pasted',error);
       showToast('That clipboard image could not be pasted.');
     });
+    return true;
+  }
+  /* Chrome only raises a paste for an editable target, and the canvas is not one, so pressing Cmd+V over
+     the diagram produced a keydown and nothing else - the clipboard was never offered to the page at all.
+     Focusing a hidden editable box for the length of the keystroke is what makes the browser hand the
+     clipboard over, and unlike reading it through the Clipboard API it needs no permission prompt and
+     works from a file:// page. */
+  function v21Alpha40PasteCatcher(){
+    let catcher=document.getElementById('v21a40PasteCatcher');
+    if(catcher)return catcher;
+    catcher=document.createElement('div');
+    catcher.id='v21a40PasteCatcher';
+    catcher.contentEditable='true';
+    catcher.setAttribute('aria-hidden','true');
+    catcher.tabIndex=-1;
+    catcher.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;overflow:hidden';
+    catcher.addEventListener('paste',event=>{
+      v21Alpha40HandlePaste(event);
+      setTimeout(()=>{catcher.textContent='';canvasWrap?.focus?.();},0);
+    });
+    document.body.appendChild(catcher);
+    return catcher;
+  }
+  let v21Alpha40Restore=null;
+  function v21Alpha40FocusPasteCatcher(){
+    if(v21Alpha40EditingText())return;
+    const catcher=v21Alpha40PasteCatcher();
+    catcher.textContent='';
+    catcher.focus({preventScroll:true});
+    /* The clipboard arrives before the next tick if it arrives at all. Hand focus back either way: a
+       paste that delivers nothing would otherwise leave the keyboard pointed at a hidden box, and every
+       shortcut after it - including the next paste - would go there instead of the canvas. */
+    clearTimeout(v21Alpha40Restore);
+    v21Alpha40Restore=setTimeout(()=>{
+      if(document.activeElement!==catcher)return;
+      catcher.textContent='';
+      canvasWrap?.focus?.();
+    },150);
+  }
+  /* Paste is a configured shortcut, and the shortcut layer prevents the key's default before running it,
+     which is why the browser never offered the clipboard to the page. Take the key in the capture phase
+     so that layer never sees it: the default then goes ahead, the catcher receives the clipboard, and
+     shapes are pasted from the armed timer if what arrives is not an image. Matched through the same
+     lookup the shortcut layer uses, so a paste rebound to another key still works. */
+  window.addEventListener('keydown',event=>{
+    if(v21Alpha40EditingText())return;
+    let command=null;
+    try{command=v186CommandForCombo(v186EventCombo(event));}catch{command=null;}
+    if(command!=='edit.paste')return;
+    event.stopImmediatePropagation();
+    v21Alpha40ArmShapePaste();
+    v21Alpha40FocusPasteCatcher();
+  },true);
+
+  /* Paste raised anywhere else - the browser's own Edit menu, or a right-click paste over a text box. */
+  document.addEventListener('paste',event=>{
+    if(event.target===document.getElementById('v21a40PasteCatcher'))return;
+    if(v21Alpha40EditingText())return;
+    v21Alpha40HandlePaste(event);
   });
   window.JandoStudio.pasteImage=file=>v21Alpha40PasteImage(file);
 
