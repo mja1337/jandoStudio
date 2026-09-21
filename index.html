@@ -20044,13 +20044,25 @@
     }
     return separated;
   }
+  /* The first make-room pass is driven by shapes that grew for their labels. Recheck after lane containment:
+     containment can legitimately change a lane/pool and expose a collision which was not present when the
+     initial pair was examined. Only imported resized shapes and actual overlaps join this second pass, so
+     unrelated, deliberately close shapes keep their original layout. */
+  function v21Alpha50ShapeClearanceCandidates(expanded){
+    const candidates=new Set(expanded||[]),shapes=v21Alpha32Shapes();
+    for(let i=0;i<shapes.length;i++)for(let j=i+1;j<shapes.length;j++)
+      if(v21Alpha32Overlap(shapes[i],shapes[j])>1){candidates.add(shapes[i].id);candidates.add(shapes[j].id);}
+    return candidates;
+  }
 
   function v21Alpha32TidyPage(pageIndex=-1){
     const textFitted=v21Alpha48FitImportedShapeText();
-    const madeRoom=v21Alpha48MakeRoom(textFitted.expanded);
     const wasStraight=new Set(state.cells.filter(cell=>isEdge(cell)&&v21Alpha32IsStraight(cell)).map(cell=>cell.id));
+    const madeRoom=v21Alpha48MakeRoom(textFitted.expanded);
     const contained=v21Alpha32ContainInLanes();
-    v21Alpha32ShiftWaypoints(v21Alpha48MergeMoves(madeRoom,contained.moved));
+    const postContainRoom=v21Alpha48MakeRoom(v21Alpha50ShapeClearanceCandidates(textFitted.expanded));
+    const finalContainment=postContainRoom.size?v21Alpha32ContainInLanes():{moved:new Map(),enclosed:0,nudged:0,grown:0,stuck:0};
+    v21Alpha32ShiftWaypoints(v21Alpha48MergeMoves(madeRoom,contained.moved,postContainRoom,finalContainment.moved));
     const restraightened=v21Alpha32Restraighten(wasStraight);
     const connectors=v21Alpha32ClearConnectors();
     const labelledConnectors=v21Alpha49SeparateCloseLabelledEdges();
@@ -20060,8 +20072,8 @@
        ones are actually in the way. */
     if(pageIndex>=0)v21Alpha33ApplyLabelAnchorsToPage(pageIndex);
     const labels=v21Alpha32TidyLabels(pageIndex);
-    return{enclosed:contained.enclosed,nudged:contained.nudged+madeRoom.size,grown:contained.grown+textFitted.grown,
-      stuck:contained.stuck,restraightened,cleared:connectors.cleared,
+    return{enclosed:contained.enclosed+finalContainment.enclosed,nudged:contained.nudged+madeRoom.size+postContainRoom.size+finalContainment.nudged,grown:contained.grown+finalContainment.grown+textFitted.grown,
+      stuck:contained.stuck+finalContainment.stuck,restraightened,cleared:connectors.cleared,
       stubborn:connectors.stubborn,labels, labelledConnectors};
   }
   /* state.cells is only ever the page on screen, and the other pages are plain arrays hanging off state.pages,
@@ -20770,6 +20782,40 @@
   canvasWrap.addEventListener('pointerleave',event=>{
     if(event.target===paintCanvas||event.target===svg)$('v112PaintCursor')?.classList.remove('visible');
   },true);
+
+  /* Keep source text authoritative during import. A malformed or specially nested draw.io cell must never
+     become a blank visible shape just because a later compatibility pass lost its label; the source XML is
+     still available and gives us the exact text to restore. */
+  function v21Alpha50SourceLabels(xml){
+    const doc=new DOMParser().parseFromString(String(xml||''),'application/xml');
+    if(doc.querySelector('parsererror'))return[];
+    return[...doc.querySelectorAll('diagram')].map((diagram,index)=>{
+      const labels=new Map();
+      diagram.querySelectorAll('mxCell[vertex="1"][id]').forEach(node=>{
+        const value=node.hasAttribute('localBaseLabel')?node.getAttribute('localBaseLabel'):node.getAttribute('value');
+        const label=stripHtmlLabel(value||'');if(label)labels.set(node.getAttribute('id'),label);
+      });
+      return{id:diagram.getAttribute('id'),index,labels};
+    });
+  }
+  const v21Alpha50BaseImport=importDrawioXml;
+  importDrawioXml=async function(text,filename='Opened.drawio'){
+    const sourcePages=v21Alpha50SourceLabels(text);
+    const result=await v21Alpha50BaseImport(text,filename);let restored=0;
+    for(let index=0;index<(state.pages||[]).length;index++){
+      const page=state.pages[index],source=sourcePages.find(item=>item.id===page.id)||sourcePages[index];
+      if(!source)continue;
+      for(const cell of page.cells||[]){
+        const label=source.labels.get(cell.id);
+        if(isVertex(cell)&&label&&!String(cell.label||'').trim()){cell.label=label;restored++;}
+      }
+    }
+    const current=state.pages.find(page=>page.id===state.currentPageId);
+    if(current)state.cells=deepClone(current.cells);
+    if(restored&&v21Alpha32Enabled)v21Alpha32LastTidy=v21Alpha32TidyDocument();
+    render();
+    return result;
+  };
 
   /* Everything held back during boot, run once now that there is something worth looking at. */
   jandoBooting = false;
