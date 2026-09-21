@@ -20817,6 +20817,31 @@
     return result;
   };
 
+  /* draw.io is free to list an edge after either of its endpoint cells. Our source-order renderer then put
+     that edge (and, critically, its opaque label backing) above the shape text. Lift only the rendered text
+     into one non-interactive foreground group: shapes remain selectable through their normal groups, while
+     their labels cannot vanish beneath a later connector. */
+  function v21Alpha51ForegroundShapeText(){
+    diagramLayer.querySelector('.v21a51-shape-text')?.remove();
+    const foreground=sEl('g',{class:'v21a51-shape-text','pointer-events':'none'});
+    for(const cell of state.cells){
+      if(!isVertex(cell)||cell.shape==='swimlane'||!String(cell.label||'').trim())continue;
+      const layer=typeof v18LayerForCell==='function'?v18LayerForCell(cell):null;
+      if(layer?.visible===false)continue;
+      const node=diagramLayer.querySelector(`[data-cell-id="${CSS.escape(cell.id)}"]`);
+      if(!node)continue;
+      const labels=[...node.children].filter(child=>child.tagName?.toLowerCase()==='text');
+      if(!labels.length)continue;
+      const holder=sEl('g',{transform:node.getAttribute('transform')||undefined,
+        opacity:String((layer?.opacity??100)/100)});
+      labels.forEach(label=>holder.appendChild(label));
+      foreground.appendChild(holder);
+    }
+    if(foreground.childNodes.length)diagramLayer.appendChild(foreground);
+  }
+  const v21Alpha51BaseRender=render;
+  render=function(){const result=v21Alpha51BaseRender();if(!jandoBooting)v21Alpha51ForegroundShapeText();return result;};
+
   /* Everything held back during boot, run once now that there is something worth looking at. */
   jandoBooting = false;
   updateUi();
