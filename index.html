@@ -17715,7 +17715,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.36';
+  const JANDO_VERSION='2.1.0-alpha.37';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17795,7 +17795,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha36';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha37';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -18706,7 +18706,15 @@
       const source=getCell(edge.source),target=getCell(edge.target);
       const ends=edgeEndpoints(edge);
       if(source&&target&&ends?.start&&ends?.end){
-        const middle=v21Alpha27OrthConnector(edge,source,target,ends.start,ends.end);
+        const sourceFixed=normalizePortName(edge.sourcePort)!=='auto';
+        const targetFixed=normalizePortName(edge.targetPort)!=='auto';
+        const middle=v21Alpha27OrthConnector(edge,source,target,ends.start,ends.end,sourceFixed,targetFixed);
+        if(middle&&middle.length){
+          /* A floating end attaches wherever the finished route arrives from. */
+          const start=sourceFixed?ends.start:v21Alpha33FloatingEnd(source,middle[0],ends.start);
+          const end=targetFixed?ends.end:v21Alpha33FloatingEnd(target,middle[middle.length-1],ends.end);
+          return dedupeRoutePoints([start,...middle,end]);
+        }
         if(middle)return dedupeRoutePoints([ends.start,...middle,ends.end]);
       }
       return v2Alpha46BaseRoutePoints(edge,overrides);
@@ -18855,15 +18863,23 @@
     const numeric=Number(value);
     return Number.isFinite(numeric)?numeric:V21A27.ORTH_BUFFER;
   }
-  function v21Alpha27OrthConnector(edge,source,target,p0,pe){
+  /* An end is fixed only where the file pins it with an exitX or entryX. mxGraph leaves the other kind
+     floating: dir stays 0 for that end and the router picks the side itself, from which face of the two
+     shapes present against each other. Passing a concrete point for both ends pinned every connector to
+     whatever side it already had, which is what left 14 of 383 leaving their shape the wrong way. */
+  function v21Alpha27OrthConnector(edge,source,target,p0,pe,sourceFixed=true,targetFixed=true){
     if(!source||!target||!p0||!pe)return null;
     const C=V21A27;
+    const first=sourceFixed?p0:null,last=targetFixed?pe:null;
     const sourceBuffer=v21Alpha27JettySize(edge,true);
     const targetBuffer=v21Alpha27JettySize(edge,false);
     const totalBuffer=targetBuffer+sourceBuffer;
-    /* Too close together for the jetties to fit: mxGraph hands these to SegmentConnector. */
-    const ddx=pe.x-p0.x,ddy=pe.y-p0.y;
-    if(ddx*ddx+ddy*ddy<totalBuffer*totalBuffer)return null;
+    /* Too close together for the jetties to fit: mxGraph hands these to SegmentConnector. It measures
+       that between the fixed points, so a floating end never triggers it. */
+    if(first&&last){
+      const ddx=last.x-first.x,ddy=last.y-first.y;
+      if(ddx*ddx+ddy*ddy<totalBuffer*totalBuffer)return null;
+    }
     const geo=[[source.x,source.y,source.w,source.h],[target.x,target.y,target.w,target.h]];
     const buffer=[sourceBuffer,targetBuffer];
     const limits=[[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]];
@@ -18879,7 +18895,7 @@
     if(dx<0){quad=dy<0?2:1;}
     else if(dy<=0){quad=3;if(dx===0)quad=2;}
     const dir=[0,0],constraint=[[0.5,0.5],[0.5,0.5]];
-    let currentTerm=p0;
+    let currentTerm=first;
     for(let i=0;i<2;i++){
       if(currentTerm){
         constraint[i][0]=(currentTerm.x-geo[i][0])/geo[i][2];
@@ -18889,7 +18905,7 @@
         if(Math.abs(currentTerm.y-geo[i][1])<=1)dir[i]=C.MASK_N;
         else if(Math.abs(currentTerm.y-geo[i][1]-geo[i][3])<=1)dir[i]=C.MASK_S;
       }
-      currentTerm=pe;
+      currentTerm=last;
     }
     const sourceTopDist=geo[0][1]-(geo[1][1]+geo[1][3]);
     const sourceLeftDist=geo[0][0]-(geo[1][0]+geo[1][2]);
