@@ -17784,7 +17784,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.45';
+  const JANDO_VERSION='2.1.0-alpha.46';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17864,7 +17864,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha45';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha46';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20425,6 +20425,130 @@
   $('exportBtn')?.addEventListener('click',v21Alpha45EnsureMenuItem,true);
   v21Alpha45EnsureMenuItem();
   window.JandoStudio.exportAllPagesPng=()=>v21Alpha45ExportAllPagesPng();
+
+  /* ================= JandoStudio v2.1.0-alpha.46 quick-create into an occupied side ================= */
+  /* The + placed a new shape a fixed 80px away whatever was already there, so using it on the side that
+     already had a connection dropped the new shape on top of the one it connects to and left a second
+     connector hanging off the source. Two cases, both about not landing on something: where that side
+     already carries a connection the new shape goes into it, and where it does not it is simply placed
+     clear of whatever is in the way. */
+  const V21A46_GAP=80;
+  function v21Alpha46Axis(direction){
+    return direction==='e'||direction==='w'
+      ?{axis:'x',size:'w',sign:direction==='e'?1:-1}
+      :{axis:'y',size:'h',sign:direction==='s'?1:-1};
+  }
+  function v21Alpha46Overlaps(a,b){
+    return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+  }
+  function v21Alpha46Obstacles(exclude){
+    return state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&!exclude.has(cell.id));
+  }
+  /* The connection already leaving this side, if there is one: whichever end touches the source, with the
+     other end lying that way and lying that way more than it lies any other. */
+  function v21Alpha46LinkOnSide(source,direction){
+    const {axis,sign}=v21Alpha46Axis(direction);
+    const centre=cell=>({x:cell.x+cell.w/2,y:cell.y+cell.h/2});
+    const from=centre(source);
+    let best=null;
+    for(const edge of state.cells){
+      if(!isEdge(edge))continue;
+      const outgoing=edge.source===source.id,incoming=edge.target===source.id;
+      if(!outgoing&&!incoming)continue;
+      const other=getCell(outgoing?edge.target:edge.source);
+      if(!other||!isVertex(other)||other.shape==='swimlane'||other.id===source.id)continue;
+      const to=centre(other),dx=to.x-from.x,dy=to.y-from.y;
+      const along=axis==='x'?dx:dy,across=axis==='x'?dy:dx;
+      if(along*sign<=0||Math.abs(along)<Math.abs(across))continue;
+      const distance=Math.abs(along);
+      if(!best||distance<best.distance)best={edge,other,outgoing,distance};
+    }
+    return best;
+  }
+  /* Everything at or past the far shape moves along together, so the run keeps its shape and the new step
+     is not simply dropped into the middle of it. */
+  function v21Alpha46MakeRoom(direction,from,amount,exclude){
+    if(!(amount>0))return null;
+    const {axis,size,sign}=v21Alpha46Axis(direction);
+    const edgeOf=cell=>sign>0?cell[axis]:-(cell[axis]+cell[size]);
+    const threshold=edgeOf(from);
+    const moved=new Map();
+    for(const cell of state.cells){
+      if(!isVertex(cell)||cell.shape==='swimlane'||exclude.has(cell.id))continue;
+      if(edgeOf(cell)<threshold-0.5)continue;
+      cell[axis]+=amount*sign;
+      moved.set(cell.id,axis==='x'?{x:amount*sign,y:0}:{x:0,y:amount*sign});
+    }
+    if(moved.size)v21Alpha32ShiftWaypoints(moved);
+    /* A pool does not move with its contents, so it has to grow to keep holding them. */
+    for(const pool of state.cells){
+      if(!isVertex(pool)||pool.shape!=='swimlane')continue;
+      const children=state.cells.filter(cell=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id);
+      if(!children.length)continue;
+      const far=Math.max(...children.map(cell=>axis==='x'?cell.x+cell.w:cell.y+cell.h));
+      const limit=axis==='x'?pool.x+pool.w:pool.y+pool.h;
+      if(far>limit-16){if(axis==='x')pool.w+=far-limit+24;else pool.h+=far-limit+24;}
+    }
+    return moved;
+  }
+  function v21Alpha46Reroute(edge){
+    if(!edge)return;
+    edge.waypoints=[];
+    edge.importedRoute=false;edge.importedHints=false;
+    v2Alpha46RouteCache.delete(edge);
+  }
+  const v21Alpha46BaseQuickCreate=quickCreateConnected;
+  quickCreateConnected=function(source,direction){
+    if(!source||!isVertex(source)||!['n','e','s','w'].includes(direction))
+      return v21Alpha46BaseQuickCreate(source,direction);
+    const link=v21Alpha46LinkOnSide(source,direction);
+    const before=new Set(state.cells.filter(isEdge).map(edge=>edge.id));
+    const created=v21Alpha46BaseQuickCreate(source,direction);
+    if(!created)return created;
+    const joined=state.cells.find(edge=>isEdge(edge)&&!before.has(edge.id)
+      &&(edge.source===created.id||edge.target===created.id));
+    const {axis,size,sign}=v21Alpha46Axis(direction);
+    const exclude=new Set([source.id,created.id]);
+    if(link&&getCell(link.other.id)){
+      /* Put it in the connection: the far shape and everything past it move along by whatever is still
+         missing, then the existing connector is re-hung from the new shape. */
+      const other=getCell(link.other.id);
+      const newFar=sign>0?created[axis]+created[size]:-(created[axis]);
+      const otherNear=sign>0?other[axis]:-(other[axis]+other[size]);
+      const deficit=newFar+V21A46_GAP-otherNear;
+      if(deficit>0)v21Alpha46MakeRoom(direction,other,snapValue(Math.ceil(deficit)),exclude);
+      if(link.outgoing){link.edge.source=created.id;link.edge.sourcePort=direction;}
+      else{
+        link.edge.target=created.id;link.edge.targetPort=direction;
+        /* The connection runs towards the source, so the new step belongs before it, not after: the
+           connector the + just made has to point the other way or the run doubles back on itself. */
+        if(joined&&joined.source===source.id&&joined.target===created.id){
+          joined.source=created.id;joined.target=source.id;
+          const sourcePort=joined.sourcePort;joined.sourcePort=joined.targetPort;joined.targetPort=sourcePort;
+          if(joined.portBias){const bias=joined.portBias;joined.portBias={source:bias.target,target:bias.source};}
+          v21Alpha46Reroute(joined);
+        }
+      }
+      v21Alpha46Reroute(link.edge);
+    }else{
+      /* Nothing connected that way, but something may still be sitting there. Move the new shape past it
+         rather than through it. */
+      let guard=0;
+      while(guard++<40){
+        const hit=v21Alpha46Obstacles(exclude).find(cell=>v21Alpha46Overlaps(created,cell));
+        if(!hit)break;
+        created[axis]=snapValue(sign>0?hit[axis]+hit[size]+V21A46_GAP:hit[axis]-V21A46_GAP-created[size]);
+      }
+      if(guard>1){
+        assignContainer(created);
+        state.cells.filter(cell=>isEdge(cell)&&(cell.source===created.id||cell.target===created.id))
+          .forEach(v21Alpha46Reroute);
+      }
+    }
+    markDirty();render();positionInlineEditor?.();
+    return created;
+  };
+
 
   render();
 
