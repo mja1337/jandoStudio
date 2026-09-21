@@ -7218,7 +7218,7 @@
     function appendPool(pool){
       ensureSwimlaneDefaults(pool);root.appendChild(createMxCell(doc,{id:pool.id,value:'',style:styleString(['group'],{aspect:'fixed',connectable:'0'}),vertex:'1',connectable:'0',parent:'1',localOrientation:pool.orientation,localTitleDirection:pool.titleDirection,localConstrainContents:pool.constrainContents?'1':'0',localMoveContents:pool.moveContents?'1':'0',...attrsFor(pool)},{x:round(pool.x),y:round(pool.y),width:round(pool.w),height:round(pool.h)}));emitted.add(pool.id);
       const metrics=laneMetrics(pool),metricById=new Map(metrics.map((m)=>[m.id,m]));metrics.forEach((metric)=>{const lane=metric.lane,vertical=pool.orientation==='vertical';const style=styleString(['swimlane'],{horizontal:vertical?'1':'0',startSize:String(round(pool.titleWidth||52)),html:'1',whiteSpace:'wrap',collapsible:'1',recursiveResize:'0',container:'1',fillColor:lane.fill||pool.fill||'#ffffff',strokeColor:pool.stroke||'#64748b',strokeWidth:String(pool.strokeWidth||1.5),fontColor:pool.fontColor||'#1f2937',fontSize:String(pool.fontSize||13),align:'center',verticalAlign:'middle',direction:!vertical&&pool.titleDirection==='top-down'?'south':undefined});root.appendChild(createMxCell(doc,{id:lane.id,value:drawioLabel(lane.name),style,vertex:'1',parent:pool.id,collapsed:lane.collapsed?'1':'0',localLaneFill:lane.fill||'',localLaneHidden:lane.hidden?'1':'0',localExpandedSize:lane.expandedSize||''},{x:round(metric.x-pool.x),y:round(metric.y-pool.y),width:round(metric.width),height:round(metric.height)}));});
-      state.cells.filter((cell)=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id&&!cell.parentGroupId).forEach((cell)=>{const metric=metricById.get(cell.laneId)||laneForCell(cell,pool)||metrics[0];if(!metric)return;const origin=pool.orientation==='vertical'?{x:metric.x,y:pool.y+(pool.titleWidth||52)}:{x:pool.x+(pool.titleWidth||52),y:metric.y};if(isGroup(cell))appendGroup(cell,metric.id,origin);else appendVertexCell(cell,metric.id,origin);});
+      state.cells.filter((cell)=>isVertex(cell)&&cell.shape!=='swimlane'&&cell.containerId===pool.id&&!cell.parentGroupId).forEach((cell)=>{const metric=metricById.get(cell.laneId)||laneForCell(cell,pool)||metrics[0];if(!metric)return;const origin=pool.orientation==='vertical'?{x:metric.x,y:pool.y}:{x:pool.x,y:metric.y};if(isGroup(cell))appendGroup(cell,metric.id,origin);else appendVertexCell(cell,metric.id,origin);});
     }
     state.cells.filter((cell)=>isVertex(cell)&&cell.shape==='swimlane').forEach(appendPool);
     state.cells.filter((cell)=>isVertex(cell)&&cell.shape!=='swimlane'&&!cell.containerId&&!cell.parentGroupId).forEach((cell)=>{if(emitted.has(cell.id))return;if(isGroup(cell))appendGroup(cell,'1',{x:0,y:0});else appendVertexCell(cell);});
@@ -7434,13 +7434,12 @@
       }
       const parent = rawCells.get(cell.parent);
       const parentPos = absolutePosition(parent.id, seen);
-      let offsetX = 0, offsetY = 0;
-      if (parent.styleFlags.includes('swimlane') || parent.styleProps.shape === 'swimlane') {
-        const startSize = Number(parent.styleProps.startSize || 0);
-        if (parent.styleProps.horizontal === '0') offsetX = startSize;
-        else offsetY = startSize;
-      }
-      const result = { x: parentPos.x + offsetX + cell.geom.x, y: parentPos.y + offsetY + cell.geom.y };
+      /* A child's geometry is relative to its parent's origin and nothing else. The swimlane's title strip
+         used to be added on top, which put every shape inside a lane 36px right and 30px down of where
+         draw.io draws it - checked against mxGraph itself, which places Create LL Asset at (100, 257)
+         where this put it at (136, 287). The lane bands were then out by the same amount, so shapes that
+         sit correctly in the file looked like they straddled a divider. */
+      const result = { x: parentPos.x + cell.geom.x, y: parentPos.y + cell.geom.y };
       absCache.set(id, result);
       return result;
     }
@@ -7600,8 +7599,15 @@
       const startArrow = normalizeArrow(raw.styleProps.startArrow || 'none', 'none');
       const endArrow = normalizeArrow(raw.styleProps.endArrow || 'block', 'block');
       const geometry = raw.element.querySelector(':scope > mxGeometry');
+      /* A connector's bends are written relative to whatever cell it hangs off, exactly like a shape's
+         position, and in these files that is usually the pool or one of its lanes. They were read as
+         absolute, so every bend on such a connector landed short by the container's own origin - a whole
+         pool's worth - which is why imported routes ran diagonally through the page instead of following
+         the corridors the file lays out. */
+      const waypointOrigin = v21Alpha33ChildOrigin(raw.parent, rawCells, absolutePosition);
       const waypoints = [...(geometry?.querySelectorAll(':scope > Array[as="points"] > mxPoint') || [])].map((point) => ({
-        x: Number(point.getAttribute('x') || 0), y: Number(point.getAttribute('y') || 0)
+        x: Number(point.getAttribute('x') || 0) + waypointOrigin.x,
+        y: Number(point.getAttribute('y') || 0) + waypointOrigin.y
       }));
       const offsetPoint = geometry?.querySelector(':scope > mxPoint[as="offset"]');
       const edge = {
@@ -17674,7 +17680,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.32';
+  const JANDO_VERSION='2.1.0-alpha.33';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17754,7 +17760,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha32';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha33';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -18424,7 +18430,10 @@
     try{doc=new DOMParser().parseFromString(text,'application/xml');}catch{return{text,moved:0};}
     if(!doc||doc.querySelector('parsererror'))return{text,moved:0};
     let moved=0;
-    for(const model of doc.querySelectorAll('mxGraphModel')){
+    v21Alpha33LabelAnchors.clear();
+    const models=[...doc.querySelectorAll('mxGraphModel')];
+    for(let modelIndex=0;modelIndex<models.length;modelIndex++){
+      const model=models[modelIndex];
       const cells=[...model.querySelectorAll('mxCell')],byId=new Map();
       for(const cell of cells){
         const id=cell.getAttribute('id')||cell.parentElement?.getAttribute('id');
@@ -18444,6 +18453,21 @@
           parent.setAttribute('value',existing?`${existing}\n${value}`:value);
         }
         const offset=cell.querySelector(':scope > mxGeometry > mxPoint[as="offset"]');
+        /* Where along the connector the label sits. draw.io keeps this on the label cell as a relative
+           geometry - x runs from -1 at the source to 1 at the target, y is a sideways nudge - and only the
+           pixel offset was carried over, so every imported label snapped back to the midpoint. That is
+           what left Yes and No floating in open space, and stacked two of them on top of each other where
+           two connectors shared a midpoint. */
+        const labelGeometry=cell.querySelector(':scope > mxGeometry');
+        const labelEdgeId=cell.getAttribute('parent')||'';
+        if(labelGeometry&&labelGeometry.getAttribute('relative')==='1'&&labelEdgeId
+          &&!v21Alpha33LabelAnchors.has(`${modelIndex}::${labelEdgeId}`)){
+          v21Alpha33LabelAnchors.set(`${modelIndex}::${labelEdgeId}`,{
+            along:Number(labelGeometry.getAttribute('x')||0),
+            cross:Number(labelGeometry.getAttribute('y')||0),
+            offsetX:Number(offset?.getAttribute('x')||0),
+            offsetY:Number(offset?.getAttribute('y')||0)});
+        }
         if(offset){
           let geometry=parent.querySelector(':scope > mxGeometry');
           if(!geometry){
@@ -18716,7 +18740,17 @@
     if(edge.importedHints&&source&&target&&overrides.waypoints===undefined){
       const ends=edgeEndpoints(edge);
       if(ends?.start&&ends?.end){
-        const middle=v21Alpha28SegmentConnector(source,target,ends.start,ends.end,waypoints);
+        /* Fixed only where the file pinned the attachment point with exitX or entryX. */
+        const sourceFixed=normalizePortName(edge.sourcePort)!=='auto';
+        const targetFixed=normalizePortName(edge.targetPort)!=='auto';
+        const middle=v21Alpha28SegmentConnector(source,target,ends.start,ends.end,waypoints,sourceFixed,targetFixed);
+        if(middle&&middle.length){
+          /* A floating end attaches wherever the finished route arrives from, which is the whole point of
+             leaving it floating - so take the side from the neighbouring bend. */
+          const start=sourceFixed?ends.start:v21Alpha33FloatingEnd(source,middle[0],ends.start);
+          const end=targetFixed?ends.end:v21Alpha33FloatingEnd(target,middle[middle.length-1],ends.end);
+          return dedupeRoutePoints([start,...middle,end]);
+        }
         if(middle)return dedupeRoutePoints([ends.start,...middle,ends.end]);
       }
     }
@@ -18959,7 +18993,11 @@
      axis at every hint, taking only x from one and only y from the next, which is why a single stored bend
      produces a staircase in draw.io and produced a diagonal here. Only applied to bends that came from a
      file; routes our own layout computes are already orthogonal and must not be rewritten. */
-  function v21Alpha28SegmentConnector(source,target,p0,pe,storedHints){
+  /* mxEdgeStyle.SegmentConnector. A connector only has a fixed end where the file gives it an exitX or
+     entryX; otherwise mxGraph treats that end as floating, and the floating branches are what decide
+     which side the line leaves from. Those branches were missing - both ends were treated as fixed - so
+     18 connectors of 383 left their shape from the wrong side. */
+  function v21Alpha28SegmentConnector(source,target,p0,pe,storedHints,sourceFixed=true,targetFixed=true){
     if(!p0||!pe||!Array.isArray(storedHints)||!storedHints.length)return null;
     const tol=1,result=[];
     let lastPushed=null;
@@ -18970,35 +19008,52 @@
       }
       return lastPushed;
     };
-    let hints=storedHints.map(h=>({x:Number(h.x),y:Number(h.y)}));
-    const pt={x:p0.x,y:p0.y};
+    const contains=(rect,x,y)=>x>=rect.x&&x<=rect.x+rect.w&&y>=rect.y&&y<=rect.y+rect.h;
+    const first=sourceFixed?{x:p0.x,y:p0.y}:null;
+    const last=targetFixed?{x:pe.x,y:pe.y}:null;
+    let hints=storedHints.map(hint=>({x:Number(hint.x),y:Number(hint.y)}));
+    const pt=first?{...first}:{x:source.x+source.w/2,y:source.y+source.h/2};
     /* Snap the outer hints onto the fixed end points where they are within tolerance. */
-    if(Math.abs(hints[0].x-pt.x)<tol)hints[0].x=pt.x;
-    if(Math.abs(hints[0].y-pt.y)<tol)hints[0].y=pt.y;
-    const tail=hints[hints.length-1];
-    if(Math.abs(tail.x-pe.x)<tol)tail.x=pe.x;
-    if(Math.abs(tail.y-pe.y)<tol)tail.y=pe.y;
+    if(first){
+      if(Math.abs(hints[0].x-first.x)<tol)hints[0].x=first.x;
+      if(Math.abs(hints[0].y-first.y)<tol)hints[0].y=first.y;
+    }
+    if(last){
+      const tail=hints[hints.length-1];
+      if(Math.abs(tail.x-last.x)<tol)tail.x=last.x;
+      if(Math.abs(tail.y-last.y)<tol)tail.y=last.y;
+    }
     let hint=hints[0],horizontal=true;
-    /* Both terminals are fixed points for us, so the floating-port channel tests collapse to the
-       alignment checks; currentTerm is null on both passes exactly as mxGraph sets it. */
-    let currentPt=p0,currentHint=hint;
+    let currentTerm=first?null:source,currentPt=first,currentHint=hint;
     for(let i=0;i<2;i++){
       const fixedVertAlign=currentPt!==null&&currentPt.x===currentHint.x;
       const fixedHozAlign=currentPt!==null&&currentPt.y===currentHint.y;
-      const hozChan=fixedHozAlign,vertChan=fixedVertAlign;
-      if(i===0&&((hozChan&&vertChan)||(fixedVertAlign&&fixedHozAlign))){/* try the target end instead */}
-      else if(vertChan||hozChan){
-        horizontal=hozChan;
-        if(i===1)horizontal=hints.length%2===0?hozChan:vertChan;
-        break;
+      const inHozChan=currentTerm!==null&&currentHint.y>=currentTerm.y&&currentHint.y<=currentTerm.y+currentTerm.h;
+      const inVertChan=currentTerm!==null&&currentHint.x>=currentTerm.x&&currentHint.x<=currentTerm.x+currentTerm.w;
+      const hozChan=fixedHozAlign||(currentPt===null&&inHozChan);
+      const vertChan=fixedVertAlign||(currentPt===null&&inVertChan);
+      if(i===0&&((hozChan&&vertChan)||(fixedVertAlign&&fixedHozAlign))){/* ambiguous - try the target end */}
+      else{
+        if(currentPt!==null&&!fixedHozAlign&&!fixedVertAlign&&(inHozChan||inVertChan)){
+          horizontal=!inHozChan;break;
+        }
+        if(vertChan||hozChan){
+          horizontal=hozChan;
+          if(i===1)horizontal=hints.length%2===0?hozChan:vertChan;
+          break;
+        }
       }
-      currentPt=pe;
+      currentTerm=last?null:target;
+      currentPt=last;
       currentHint=hints[hints.length-1];
       if(fixedVertAlign&&fixedHozAlign)hints=hints.slice(1);
       if(!hints.length)return null;
     }
-    if(horizontal&&p0.y!==hint.y)pushPoint({x:pt.x,y:hint.y});
-    else if(!horizontal&&p0.x!==hint.x)pushPoint({x:hint.x,y:pt.y});
+    const outside=(value,low,span)=>value<low||value>low+span;
+    if(horizontal&&((first&&first.y!==hint.y)||(!first&&outside(hint.y,source.y,source.h))))
+      pushPoint({x:pt.x,y:hint.y});
+    else if(!horizontal&&((first&&first.x!==hint.x)||(!first&&outside(hint.x,source.x,source.w))))
+      pushPoint({x:hint.x,y:pt.y});
     if(horizontal)pt.y=hint.y;else pt.x=hint.x;
     for(let i=0;i<hints.length;i++){
       horizontal=!horizontal;
@@ -19006,18 +19061,24 @@
       if(horizontal)pt.y=hint.y;else pt.x=hint.x;
       pushPoint({x:pt.x,y:pt.y});
     }
+    const endPt=last?{...last}:{x:target.x+target.w/2,y:target.y+target.h/2};
     if(hint){
-      if(horizontal&&pe.y!==hint.y)pushPoint({x:pe.x,y:hint.y});
-      else if(!horizontal&&pe.x!==hint.x)pushPoint({x:hint.x,y:pe.y});
+      if(horizontal&&((last&&last.y!==hint.y)||(!last&&outside(hint.y,target.y,target.h))))
+        pushPoint({x:endPt.x,y:hint.y});
+      else if(!horizontal&&((last&&last.x!==hint.x)||(!last&&outside(hint.x,target.x,target.w))))
+        pushPoint({x:hint.x,y:endPt.y});
     }
-    /* Drop a trailing point that has effectively arrived, and square up the one before it. */
-    const last=result[result.length-1];
-    if(last&&Math.abs(pe.x-last.x)<=tol&&Math.abs(pe.y-last.y)<=tol){
+    /* A floating end is attached after the route is built, so a bend that landed inside the shape is
+       dropped rather than drawn. */
+    if(!first)while(result.length>1&&result[1]&&contains(source,result[1].x,result[1].y))result.splice(1,1);
+    if(!last)while(result.length>1&&result[result.length-1]&&contains(target,result[result.length-1].x,result[result.length-1].y))result.pop();
+    const tail=result[result.length-1];
+    if(last&&tail&&Math.abs(last.x-tail.x)<=tol&&Math.abs(last.y-tail.y)<=tol){
       result.pop();
       const prior=result[result.length-1];
       if(prior){
-        if(Math.abs(prior.x-pe.x)<tol)prior.x=pe.x;
-        if(Math.abs(prior.y-pe.y)<tol)prior.y=pe.y;
+        if(Math.abs(prior.x-last.x)<tol)prior.x=last.x;
+        if(Math.abs(prior.y-last.y)<tol)prior.y=last.y;
       }
     }
     return result;
@@ -19625,16 +19686,26 @@
     const drawn=new Map();
     for(const cell of state.cells)if(isEdge(cell))drawn.set(cell.id,v21Alpha32DrawnPath(cell));
     const clashes=new Set();
+    /* An imported label is where draw.io put it, which is usually touching its connector and often just
+       clipping a shape. Judging those by a few square pixels moved 78 labels of 161 off positions that
+       had just been matched to draw.io exactly, so a label has to be genuinely obscured to be moved: a
+       third of it under something, or another connector running through the text itself rather than
+       nicking a corner. */
+    const area=rect=>Math.max(1,rect.w*rect.h);
+    const core=rect=>({x:rect.x+rect.w*0.3,y:rect.y+rect.h*0.3,w:rect.w*0.4,h:rect.h*0.4});
     for(const [id,rect] of rects){
-      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>25)){clashes.add(id);continue;}
+      if(shapes.some(shape=>v21Alpha32Overlap(rect,shape)>area(rect)*0.34)){clashes.add(id);continue;}
       for(const [otherId,other] of rects)
-        if(otherId!==id&&v21Alpha32Overlap(rect,other)>25){clashes.add(id);clashes.add(otherId);}
+        if(otherId!==id&&v21Alpha32Overlap(rect,other)>Math.min(area(rect),area(other))*0.3){
+          clashes.add(id);clashes.add(otherId);
+        }
       if(clashes.has(id))continue;
+      const middle=core(rect);
       for(const [edgeId,points] of drawn){
         if(edgeId===id||points.length<2)continue;
         let crossed=false;
         for(let i=0;i<points.length-1&&!crossed;i++)
-          if(v21Alpha32SegmentHitsRect(points[i],points[i+1],rect))crossed=true;
+          if(v21Alpha32SegmentHitsRect(points[i],points[i+1],middle))crossed=true;
         if(crossed){clashes.add(id);break;}
       }
     }
@@ -19671,16 +19742,109 @@
     return totals;
   }
 
-  let v21Alpha32LastTidy=null;
+  let v21Alpha32LastTidy=null,v21Alpha32Enabled=true;
   const v21Alpha32BaseImport=importDrawioXml;
   importDrawioXml=async function(text,filename='Opened.drawio'){
     const result=await v21Alpha32BaseImport(text,filename);
-    v21Alpha32LastTidy=v21Alpha32TidyDocument();
+    v21Alpha33ApplyLabelAnchors();
+    v21Alpha32LastTidy=v21Alpha32Enabled?v21Alpha32TidyDocument():null;
     render();
     return result;
   };
   window.JandoStudio.tidyImport={run:()=>v21Alpha32TidyDocument(),page:()=>v21Alpha32TidyPage(),
-    last:()=>v21Alpha32LastTidy};
+    last:()=>v21Alpha32LastTidy,
+    /* Off is for comparing an import against draw.io without the tidy in the way. */
+    enabled:value=>{if(value!==undefined)v21Alpha32Enabled=Boolean(value);return v21Alpha32Enabled;}};
+
+  /* ================= JandoStudio v2.1.0-alpha.33 draw.io geometry fidelity ================= */
+
+  /* Where a child cell's own coordinates start, inside the cell it hangs off. Mirrors what
+     absolutePosition already does for shapes, including the swimlane title bar, so a connector's bends
+     are placed on exactly the same grid as the shapes they run between. */
+  function v21Alpha33ChildOrigin(parentId,rawCells,absolutePosition){
+    if(!parentId||parentId==='0'||parentId==='1'||!rawCells||!rawCells.has(parentId))return{x:0,y:0};
+    return absolutePosition(parentId);
+  }
+
+  /* Which side of a shape a point sits off. mxGraph projects from the centre onto the perimeter, and the
+     neighbouring bend of an orthogonal route always shares the centre's x or y, so the side's midpoint is
+     that projection exactly - including on a diamond, where the midpoint is the vertex. */
+  function v21Alpha33FloatingEnd(cell,neighbour,fallback){
+    if(!cell||!neighbour)return fallback;
+    const left=cell.x,right=cell.x+cell.w,top=cell.y,bottom=cell.y+cell.h;
+    const withinY=neighbour.y>=top&&neighbour.y<=bottom,withinX=neighbour.x>=left&&neighbour.x<=right;
+    let side=null;
+    if(neighbour.x<left&&withinY)side='w';
+    else if(neighbour.x>right&&withinY)side='e';
+    else if(neighbour.y<top&&withinX)side='n';
+    else if(neighbour.y>bottom&&withinX)side='s';
+    else{
+      const dx=neighbour.x-(left+right)/2,dy=neighbour.y-(top+bottom)/2;
+      if(!dx&&!dy)return fallback;
+      const acrossX=dx?(cell.w/2)/Math.abs(dx):Infinity,acrossY=dy?(cell.h/2)/Math.abs(dy):Infinity;
+      side=acrossX<acrossY?(dx>0?'e':'w'):(dy>0?'s':'n');
+    }
+    return v2Alpha44PortPoint(cell,side);
+  }
+  const v21Alpha33LabelAnchors=new Map();
+  /* mxGraphView.getPoint, which is how draw.io turns a label's relative geometry into a position on the
+     drawn line. Ported rather than approximated: the sideways nudge is applied along the normal of the
+     segment the label lands on, and its y term is subtracted, so a sign or an axis in the wrong place puts
+     the label on the wrong side of the connector. */
+  function v21Alpha33PointOnEdge(points,anchor){
+    const lengths=[];let total=0;
+    for(let i=0;i<points.length-1;i++){
+      const length=Math.hypot(points[i+1].x-points[i].x,points[i+1].y-points[i].y);
+      lengths.push(length);total+=length;
+    }
+    if(!total)return{...points[0]};
+    const distance=Math.round(((Number(anchor.along)||0)/2+0.5)*total);
+    let segment=lengths[0],covered=0,index=1;
+    while(distance>=Math.round(covered+segment)&&index<points.length-1){covered+=segment;segment=lengths[index++];}
+    const from=points[index-1],to=points[index];
+    if(!from||!to)return{...points[0]};
+    const factor=segment===0?0:(distance-covered)/segment;
+    const cross=Number(anchor.cross)||0;
+    const dx=to.x-from.x,dy=to.y-from.y;
+    const nx=segment===0?0:dy/segment,ny=segment===0?0:dx/segment;
+    return{x:from.x+dx*factor+nx*cross+(Number(anchor.offsetX)||0),
+      y:from.y+dy*factor-ny*cross+(Number(anchor.offsetY)||0)};
+  }
+  /* Label positions are stored here as a pixel offset from the midpoint of the drawn line, so the anchors
+     can only be turned into offsets once the routes exist - which is after the import, not during it. */
+  function v21Alpha33ApplyLabelAnchorsToPage(pageIndex){
+    if(!v21Alpha33LabelAnchors.size)return 0;
+    let placed=0;
+    for(const edge of state.cells){
+      if(!isEdge(edge)||!edge.label)continue;
+      const anchor=v21Alpha33LabelAnchors.get(`${pageIndex}::${edge.id}`);
+      if(!anchor)continue;
+      const points=routePoints(edge)||[];
+      if(points.length<2)continue;
+      const target=v21Alpha33PointOnEdge(points,anchor);
+      const base=basePathMidpoint(edge);
+      if(!Number.isFinite(target.x)||!Number.isFinite(target.y))continue;
+      edge.labelOffset={x:Math.round(target.x-base.x),y:Math.round(target.y-base.y)};
+      placed++;
+    }
+    return placed;
+  }
+  function v21Alpha33ApplyLabelAnchors(){
+    if(!v21Alpha33LabelAnchors.size)return 0;
+    let placed=0;
+    const keep=state.cells;
+    const pages=state.pages||[];
+    for(let index=0;index<pages.length;index++){
+      if(!Array.isArray(pages[index].cells))continue;
+      state.cells=pages[index].cells;
+      try{placed+=v21Alpha33ApplyLabelAnchorsToPage(index);}catch(error){console.warn('Label anchors skipped a page',error);}
+    }
+    state.cells=keep;
+    const current=pages.findIndex(page=>page.id===state.currentPageId);
+    try{v21Alpha33ApplyLabelAnchorsToPage(current<0?0:current);}catch(error){console.warn('Label anchors skipped the open page',error);}
+    return placed;
+  }
+  window.JandoStudio.labelAnchors=()=>v21Alpha33LabelAnchors.size;
 
   render();
 
