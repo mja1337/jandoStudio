@@ -19917,7 +19917,7 @@
     return{x,y,w:Math.max(12,rw),h:Math.max(12,rh)};
   }
   function v21Alpha48FitImportedShapeText(){
-    let grown=0;
+    let grown=0;const expanded=new Set();
     for(const cell of state.cells){
       if(!isVertex(cell)||['swimlane','group','legend','text'].includes(cell.shape)||!cell.label||isFullyLocked(cell))continue;
       ensureVertexDefaults(cell);
@@ -19941,16 +19941,69 @@
            entire shape by the shortfall and repeat rather than using one brittle shape formula. */
         nextH=Math.ceil(nextH+(required-region.h)/Math.max(.12,region.h/Math.max(1,nextH)));
       }
-      if(nextW>cell.w||nextH>cell.h){cell.w=Math.max(cell.w,nextW);cell.h=Math.max(cell.h,nextH);grown++;}
+      if(nextW>cell.w||nextH>cell.h){cell.w=Math.max(cell.w,nextW);cell.h=Math.max(cell.h,nextH);expanded.add(cell.id);grown++;}
     }
-    return grown;
+    return{grown,expanded};
+  }
+  function v21Alpha48RecordMove(moved,cell,dx,dy){
+    if(!dx&&!dy)return;
+    const prior=moved.get(cell.id)||{x:0,y:0};
+    moved.set(cell.id,{x:prior.x+dx,y:prior.y+dy});
+  }
+  /* Expanding a label must not turn its neighbours into an overlap. Keep the expanded shape in its imported
+     position and push only the adjacent, unlocked shapes outwards. Newly moved shapes join the work set so
+     a tight row or column opens as a small cascade rather than leaving a later collision behind. */
+  function v21Alpha48MakeRoom(expanded){
+    const moved=new Map(),active=new Set(expanded),gap=18;
+    const shapes=()=>state.cells.filter(cell=>isVertex(cell)&&!['swimlane','group','legend','text'].includes(cell.shape));
+    const spaced=cell=>({x:cell.x-gap/2,y:cell.y-gap/2,w:cell.w+gap,h:cell.h+gap});
+    for(let round=0;round<Math.max(2,shapes().length*2);round++){
+      let changed=false;const all=shapes();
+      for(let i=0;i<all.length;i++)for(let j=i+1;j<all.length;j++){
+        const a=all[i],b=all[j];
+        if(!active.has(a.id)&&!active.has(b.id)||v21Alpha32Overlap(spaced(a),spaced(b))<=1)continue;
+        let anchor=a,shift=b;
+        /* The shape whose text made it grow never gets displaced by its own expansion. */
+        if(expanded.has(a.id)&&!expanded.has(b.id)){anchor=a;shift=b;}
+        else if(expanded.has(b.id)&&!expanded.has(a.id)){anchor=b;shift=a;}
+        else if(active.has(b.id)&&!active.has(a.id)){anchor=b;shift=a;}
+        else if(active.has(a.id)&&active.has(b.id)){
+          /* With two equally affected shapes, preserve the one that was earlier in reading order. */
+          if(b.y<a.y||(b.y===a.y&&b.x<a.x)){anchor=b;shift=a;}
+        }
+        if(isFullyLocked(shift)){
+          if(expanded.has(anchor.id)||isFullyLocked(anchor))continue;
+          const swap=anchor;anchor=shift;shift=swap;
+        }
+        const ax=anchor.x+anchor.w/2,ay=anchor.y+anchor.h/2;
+        const sx=shift.x+shift.w/2,sy=shift.y+shift.h/2;
+        let dx=0,dy=0;
+        if(Math.abs(sx-ax)>=Math.abs(sy-ay)){
+          dx=sx>=ax?anchor.x+anchor.w+gap-shift.x:anchor.x-gap-(shift.x+shift.w);
+        }else{
+          dy=sy>=ay?anchor.y+anchor.h+gap-shift.y:anchor.y-gap-(shift.y+shift.h);
+        }
+        if(!dx&&!dy)continue;
+        shift.x+=dx;shift.y+=dy;v21Alpha48RecordMove(moved,shift,dx,dy);active.add(shift.id);changed=true;
+      }
+      if(!changed)break;
+    }
+    return moved;
+  }
+  function v21Alpha48MergeMoves(...maps){
+    const merged=new Map();
+    for(const map of maps)for(const [id,move] of map||[]){
+      const prior=merged.get(id)||{x:0,y:0};merged.set(id,{x:prior.x+move.x,y:prior.y+move.y});
+    }
+    return merged;
   }
 
   function v21Alpha32TidyPage(pageIndex=-1){
     const textFitted=v21Alpha48FitImportedShapeText();
+    const madeRoom=v21Alpha48MakeRoom(textFitted.expanded);
     const wasStraight=new Set(state.cells.filter(cell=>isEdge(cell)&&v21Alpha32IsStraight(cell)).map(cell=>cell.id));
     const contained=v21Alpha32ContainInLanes();
-    v21Alpha32ShiftWaypoints(contained.moved);
+    v21Alpha32ShiftWaypoints(v21Alpha48MergeMoves(madeRoom,contained.moved));
     const restraightened=v21Alpha32Restraighten(wasStraight);
     const connectors=v21Alpha32ClearConnectors();
     /* A label's position is held as an offset from the midpoint of its connector, so moving a shape or
@@ -19959,7 +20012,7 @@
        ones are actually in the way. */
     if(pageIndex>=0)v21Alpha33ApplyLabelAnchorsToPage(pageIndex);
     const labels=v21Alpha32TidyLabels(pageIndex);
-    return{enclosed:contained.enclosed,nudged:contained.nudged,grown:contained.grown+textFitted,
+    return{enclosed:contained.enclosed,nudged:contained.nudged+madeRoom.size,grown:contained.grown+textFitted.grown,
       stuck:contained.stuck,restraightened,cleared:connectors.cleared,
       stubborn:connectors.stubborn,labels};
   }
