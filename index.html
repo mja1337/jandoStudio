@@ -365,7 +365,7 @@
     }
     .edge-label-handle:hover { fill: #d97706; }
     .edge-label { cursor: move; pointer-events: all; }
-    .edge-label-hit { fill: rgba(255, 255, 255, 0.94); stroke: #d0d5dd; stroke-width: 0.8; vector-effect: non-scaling-stroke; pointer-events: all; }
+    .edge-label-hit { fill: rgba(255, 255, 255, 0.94); stroke: none; vector-effect: non-scaling-stroke; pointer-events: all; }
     .connection-port-line { stroke: #98a2b3; stroke-width: 1.2; vector-effect: non-scaling-stroke; pointer-events: none; }
     .connection-port {
       fill: #ffffff;
@@ -3268,7 +3268,7 @@
     exportSvg.setAttribute('width', String(bounds.w)); exportSvg.setAttribute('height', String(bounds.h));
     const defs = svg.querySelector('defs')?.cloneNode(true); if (defs) exportSvg.appendChild(defs);
     const style = document.createElementNS(SVG_NS, 'style');
-    style.textContent = `.edge-hit{display:none}.edge-visible{fill:none}.edge-label-hit{fill:#fff;stroke:#d8dde6}.diagram-node,.diagram-edge{font-family:Arial,Helvetica,sans-serif}`;
+    style.textContent = `.edge-hit{display:none}.edge-visible{fill:none}.edge-label-hit{fill:#fff;stroke:none}.diagram-node,.diagram-edge{font-family:Arial,Helvetica,sans-serif}`;
     exportSvg.appendChild(style);
     exportSvg.appendChild(sEl('rect',{x:bounds.x,y:bounds.y,width:bounds.w,height:bounds.h,fill:'#dfe4ea'}));
     exportSvg.appendChild(sEl('rect',{x:0,y:0,width:state.page.width,height:state.page.height,fill:state.page.background||'#ffffff',stroke:'#cfd5df','stroke-width':'1'}));
@@ -7481,6 +7481,17 @@
       const width = group.geom.w || (orientation === 'vertical' ? sorted.reduce((sum, lane) => sum + (lane.geom.w || 100), 0) : Math.max(...sorted.map((lane) => lane.geom.w || 0), 600));
       const height = group.geom.h || (orientation === 'vertical' ? Math.max(...sorted.map((lane) => lane.geom.h || 0), 360) : sorted.reduce((sum, lane) => sum + (lane.geom.h || 100), 0));
       const firstStyle = sorted[0]?.styleProps || {};
+      /* The heading band is the pool's own startSize. Most files leave the first lane at offset 0 and let
+         the band sit over the top of it, which is why reading the band off the first lane's offset only
+         found it on the handful of pages that happen to indent lane one. The band eats into lane one, so
+         it is only honoured where that leaves lane one somewhere to be. */
+      const declaredHeader = Math.max(0, Number(group.element.getAttribute('localHeaderSize'))
+        || Number(group.styleProps.startSize) || 0);
+      const laneStart = (lane) => (orientation === 'vertical' ? lane?.geom.x : lane?.geom.y) || 0;
+      const firstLaneEnd = sorted.length > 1 ? laneStart(sorted[1])
+        : (orientation === 'vertical' ? width : height);
+      const poolHeader = declaredHeader > 0 && laneStart(sorted[0]) <= declaredHeader
+        && firstLaneEnd > declaredHeader ? declaredHeader : 0;
       const pool = ensureSwimlaneDefaults({
         id: groupId,
         kind: 'vertex', shape: 'swimlane',
@@ -7489,7 +7500,7 @@
           id: lane.id,
           name: stripHtmlLabel(lane.value) || `Lane ${index + 1}`,
           /* Measured from the lane's own offset, not its own length - see v21Alpha32LaneSpan. */
-          size: v21Alpha32LaneSpan(sorted, index, orientation, width, height),
+          size: v21Alpha32LaneSpan(sorted, index, orientation, width, height, poolHeader),
           fill: lane.element.getAttribute('localLaneFill') || readStyleColor(lane.styleProps, 'fillColor', null),
           collapsed: lane.element.getAttribute('collapsed') === '1',
           hidden: lane.element.getAttribute('localLaneHidden') === '1',
@@ -7499,8 +7510,7 @@
         /* The pool's own heading: a band across the whole pool above the first lane, which draw.io writes
            as the pool's startSize and which shows up here as the offset of the first lane. */
         label: stripHtmlLabel(group.value) || '',
-        headerSize: Math.max(0, Number(group.element.getAttribute('localHeaderSize'))
-          || (orientation === 'vertical' ? (sorted[0]?.geom.x || 0) : (sorted[0]?.geom.y || 0))),
+        headerSize: poolHeader,
         titleDirection: group.element.getAttribute('localTitleDirection') || (firstStyle.direction === 'south' ? 'top-down' : 'bottom-up'),
         constrainContents: group.element.getAttribute('localConstrainContents') === '1',
         moveContents: group.element.getAttribute('localMoveContents') !== '0',
@@ -7646,8 +7656,9 @@
         arrow: endArrow,
         lineStyle: lineStyleFromProps(raw.styleProps),
         rounded: String(raw.styleProps.rounded || '0') === '1',
-        stroke: readStyleColor(raw.styleProps, 'strokeColor', '#475467'),
-        strokeWidth: Number(raw.styleProps.strokeWidth || 2),
+        /* draw.io's defaults for a connector that names no stroke of its own. */
+        stroke: readStyleColor(raw.styleProps, 'strokeColor', '#000000'),
+        strokeWidth: Number(raw.styleProps.strokeWidth || 1),
         fontColor: readStyleColor(raw.styleProps, 'fontColor', '#1f2937'),
         fontSize: Number(raw.styleProps.fontSize || 12),
         waypoints,
@@ -8744,7 +8755,7 @@
 
   function v110ImageBoundsForSelection(){const selected=[...state.selected].map(getCell).filter(isVertex);if(!selected.length)return null;const b=selectionBounds(selected);const pad=12;return{x:Math.max(0,b.x-pad),y:Math.max(0,b.y-pad),w:Math.min(state.page.width,b.w+pad*2),h:Math.min(state.page.height,b.h+pad*2)};}
   function v110SvgForPng(bounds,transparent=false){
-    const root=document.createElementNS(SVG_NS,'svg');root.setAttribute('xmlns',SVG_NS);root.setAttribute('xmlns:xlink','http://www.w3.org/1999/xlink');root.setAttribute('viewBox',`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`);root.setAttribute('width',String(bounds.w));root.setAttribute('height',String(bounds.h));const defs=svg.querySelector('defs')?.cloneNode(true);if(defs)root.appendChild(defs);const style=document.createElementNS(SVG_NS,'style');style.textContent='.edge-hit{display:none}.edge-visible{fill:none}.edge-label-hit{fill:#fff;stroke:#d8dde6}.diagram-node,.diagram-edge{font-family:Arial,Helvetica,sans-serif}';root.appendChild(style);if(!transparent)root.appendChild(sEl('rect',{x:bounds.x,y:bounds.y,width:bounds.w,height:bounds.h,fill:state.page.background||'#ffffff'}));const clone=diagramLayer.cloneNode(true);clone.querySelectorAll('.edge-hit').forEach(n=>n.remove());const paint=state.paintData?sEl('image',{x:0,y:0,width:state.page.width,height:state.page.height,href:state.paintData}):null;if(v110ImageDoc()){if(paint)root.appendChild(paint);root.appendChild(clone);}else{root.appendChild(clone);if(paint)root.appendChild(paint);}return new XMLSerializer().serializeToString(root);
+    const root=document.createElementNS(SVG_NS,'svg');root.setAttribute('xmlns',SVG_NS);root.setAttribute('xmlns:xlink','http://www.w3.org/1999/xlink');root.setAttribute('viewBox',`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`);root.setAttribute('width',String(bounds.w));root.setAttribute('height',String(bounds.h));const defs=svg.querySelector('defs')?.cloneNode(true);if(defs)root.appendChild(defs);const style=document.createElementNS(SVG_NS,'style');style.textContent='.edge-hit{display:none}.edge-visible{fill:none}.edge-label-hit{fill:#fff;stroke:none}.diagram-node,.diagram-edge{font-family:Arial,Helvetica,sans-serif}';root.appendChild(style);if(!transparent)root.appendChild(sEl('rect',{x:bounds.x,y:bounds.y,width:bounds.w,height:bounds.h,fill:state.page.background||'#ffffff'}));const clone=diagramLayer.cloneNode(true);clone.querySelectorAll('.edge-hit').forEach(n=>n.remove());const paint=state.paintData?sEl('image',{x:0,y:0,width:state.page.width,height:state.page.height,href:state.paintData}):null;if(v110ImageDoc()){if(paint)root.appendChild(paint);root.appendChild(clone);}else{root.appendChild(clone);if(paint)root.appendChild(paint);}return new XMLSerializer().serializeToString(root);
   }
   async function v110ExportPng(mode='standard'){
     let bounds={x:0,y:0,w:state.page.width,h:state.page.height};if(mode==='selection'){bounds=v110ImageBoundsForSelection();if(!bounds)return showToast('Select one or more diagram objects first.');}
@@ -17704,7 +17715,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.34';
+  const JANDO_VERSION='2.1.0-alpha.35';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17784,7 +17795,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha34';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha35';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -17982,11 +17993,16 @@
     }
     return{w:width,h:Math.ceil(lines.length*lineHeight+padding*2)+2,lines:lines.length};
   }
+  /* draw.io draws a connector's label as plain text. A 64px-wide bordered card around the word "No" reads
+     as a shape in its own right and covers whatever it happens to sit over, so the box is only as big as
+     the text needs, has no outline, and keeps a white backing just so the line behind stays readable. */
   function v21Alpha14LabelBox(text,fontSize){
-    const charWidth=Math.max(4.8,fontSize*0.56);
-    const natural=Math.round(String(text||'').length*charWidth+12);
-    return v21Alpha14FitBox(text,{fontSize,padding:6,width:Math.min(260,natural),
-      minWidth:64,maxWidth:260,maxLines:3});
+    /* The estimate has to be generous enough that a label draw.io fits on one line does not wrap here -
+       two lines of text cover more than one wider line does. */
+    const charWidth=Math.max(5.4,fontSize*0.62);
+    const natural=Math.round(String(text||'').length*charWidth+8);
+    return v21Alpha14FitBox(text,{fontSize,padding:3,width:Math.min(300,natural),
+      minWidth:16,maxWidth:300,maxLines:3});
   }
   const v21Alpha14BaseRenderEdge=renderEdge;
   renderEdge=function(edge,targetLayer=diagramLayer){
@@ -18000,10 +18016,10 @@
     const fontSize=Number(edge.fontSize||12),box=v21Alpha14LabelBox(edge.label,fontSize);
     const x=centre.x-box.w/2,y=centre.y-box.h/2;
     while(labelGroup.firstChild)labelGroup.removeChild(labelGroup.firstChild);
-    labelGroup.appendChild(sEl('rect',{x,y,width:box.w,height:box.h,rx:4,class:'edge-label-hit',
-      fill:'#ffffff',stroke:'#d0d5dd','stroke-width':0.8}));
+    labelGroup.appendChild(sEl('rect',{x,y,width:box.w,height:box.h,rx:0,class:'edge-label-hit',
+      fill:'#ffffff',stroke:'none','stroke-width':0}));
     appendWrappedText(labelGroup,edge.label,x,y,box.w,box.h,
-      {fontSize,color:edge.fontColor||'#1f2937',padding:6});
+      {fontSize,color:edge.fontColor||'#1f2937',padding:3});
     return group;
   };
 
@@ -19477,16 +19493,17 @@
      placed against the real dividers straddled them. Measure each lane from its own offset to where the next
      one starts instead: the dividers then land exactly where the file puts them, and the lanes still tile the
      pool, which is what the rest of the editor assumes. */
-  function v21Alpha32LaneSpan(sorted,index,orientation,width,height){
+  function v21Alpha32LaneSpan(sorted,index,orientation,width,height,header=0){
     const vertical=orientation==='vertical',span=vertical?width:height;
     const offsetOf=lane=>(vertical?lane.geom.x:lane.geom.y)||0;
     const lengthOf=lane=>(vertical?lane.geom.w:lane.geom.h)||0;
     const fallback=lengthOf(sorted[index])||span/sorted.length;
     if(!(span>0))return fallback;
-    /* Measured from this lane's own offset, so whatever sits above the first lane stays above it - that
-       gap is the pool's heading band, not part of lane one. */
-    const start=offsetOf(sorted[index]);
+    /* Measured from this lane's own offset, so the lanes land on the dividers the file draws. Lane one
+       starts below the heading band, which in most files is drawn over the top of it. */
     const end=index===sorted.length-1?span:offsetOf(sorted[index+1]);
+    let start=offsetOf(sorted[index]);
+    if(index===0&&header>0&&start<header&&end>header)start=header;
     const size=end-start;
     return size>1?size:fallback;
   }
