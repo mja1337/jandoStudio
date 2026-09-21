@@ -16796,7 +16796,13 @@
     if(state.spaceDown)return;
     const layer=v111ActiveLayer(),page=paintPoint(event);if(!layer||layer.locked)return showToast('Choose an unlocked image or Paint layer first.');
     if(v21a5IsPaintLayer(layer))return v21a5StartRectSelection(event,layer,page);
-    const hit=v111TransformHit(layer,page);if(hit){v2Alpha32BeginPriorityTransform(event,layer,hit,page);return;}
+    const hit=v111TransformHit(layer,page);
+    /* A drag inside an image layer picks a region out of it, the same as on a Paint layer. It used to
+       pick the whole layer up and move it, which is the one thing you cannot want from a tool called
+       Select when you have just pasted a screenshot in to take a piece out of. The corner handles still
+       resize, and holding the modifier still moves the layer whole. */
+    if(hit&&hit.type==='move'&&!modifierKey(event))return v21a5StartRectSelection(event,layer,page);
+    if(hit){v2Alpha32BeginPriorityTransform(event,layer,hit,page);return;}
     // Clicking away from an image layer remains a no-op instead of creating a misleading full-layer selection.
     v21a5SelectionRect=null;v111RenderOverlay();
   };
@@ -16836,7 +16842,7 @@
   v112UpdateCursorMode=function(){const result=v21a5BaseCursorUpdate();if(state.workspace==='paint'&&state.paintTool==='transform'){v21a4HidePaintCursor?.();paintCanvas.style.setProperty('cursor',v21a5IsPaintLayer(v111ActiveLayer())?'crosshair':'default','important');}return result;};
 
   function v21a5InstallSelectionHint(){
-    const status=$('v2a26PaintStatus');if(!status||status.parentElement?.querySelector('.v21a5-selection-note'))return;const note=document.createElement('div');note.className='v21a5-selection-note';note.textContent='Select / Transform: drag a dotted box over Paint pixels to select only that region. Image layers and lifted selections use transform handles.';status.insertAdjacentElement('afterend',note);
+    const status=$('v2a26PaintStatus');if(!status||status.parentElement?.querySelector('.v21a5-selection-note'))return;const note=document.createElement('div');note.className='v21a5-selection-note';note.textContent='Select / Transform: drag a dotted box over the image to lift just that region. The corner handles resize the layer, and holding Ctrl/Cmd while dragging moves it whole.';status.insertAdjacentElement('afterend',note);
   }
   v21a5InstallSelectionHint();
 
@@ -17778,7 +17784,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.43';
+  const JANDO_VERSION='2.1.0-alpha.44';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17858,7 +17864,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha43';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha44';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -20117,6 +20123,9 @@
      the panel tab on the right, which only exists for an image page. Land on both. */
   function v21Alpha40ShowImageWorkspace(){
     setWorkspace('paint');
+    /* Land on Select rather than Pencil. What follows a paste is nearly always taking a piece out of it,
+       and an accidental drag then selects instead of drawing on the image. */
+    if(state.paintTool!=='transform')setPaintTool('transform');
     v111RenderImagePanel();
     const tab=document.querySelector('.right-tab.image-tab');
     if(tab&&!tab.classList.contains('hidden'))tab.click();
