@@ -2750,14 +2750,17 @@
     ensureEdgeDefaults(edge);
     const source = getCell(edge.source);
     const target = getCell(edge.target);
-    if (!source || !target) return null;
-    const sourceToward = edge.waypoints[0] || center(target);
-    const targetToward = edge.waypoints[edge.waypoints.length - 1] || center(source);
+    /* An end with no shape sits at the point the file gives it. */
+    const freeStart = !source && edge.sourcePoint ? { ...edge.sourcePoint } : null;
+    const freeEnd = !target && edge.targetPoint ? { ...edge.targetPoint } : null;
+    if ((!source && !freeStart) || (!target && !freeEnd)) return null;
+    const sourceToward = edge.waypoints[0] || (target ? center(target) : freeEnd);
+    const targetToward = edge.waypoints[edge.waypoints.length - 1] || (source ? center(source) : freeStart);
     return {
       source,
       target,
-      start: portPointByName(source, edge.sourcePort, sourceToward),
-      end: portPointByName(target, edge.targetPort, targetToward)
+      start: freeStart || portPointByName(source, edge.sourcePort, sourceToward),
+      end: freeEnd || portPointByName(target, edge.targetPort, targetToward)
     };
   }
 
@@ -7219,7 +7222,11 @@
       root.appendChild(createMxCell(doc,{id:group.id,value:'',style:buildVertexStyle(group),vertex:'1',connectable:'0',parent,...attrsFor(group)},{x:round(group.x-origin.x),y:round(group.y-origin.y),width:round(group.w),height:round(group.h)}));emitted.add(group.id);
       groupChildren(group.id).forEach((child)=>{if(isGroup(child))appendGroup(child,group.id,{x:group.x,y:group.y});else appendVertexCell(child,group.id,{x:group.x,y:group.y});});
     }
-    function appendEdgeCell(edge){ensureEdgeDefaults(edge);const edgeCell=createMxCell(doc,{id:edge.id,value:drawioLabel(edge.label||''),style:buildEdgeStyle(edge),edge:'1',parent:'1',source:edge.source,target:edge.target,localLockText:edge.locks?.text?'1':undefined,localLockAll:edge.locks?.all?'1':undefined},{relative:'1'});const geometry=edgeCell.querySelector('mxGeometry');if(edge.waypoints?.length){const array=doc.createElement('Array');array.setAttribute('as','points');edge.waypoints.forEach((point)=>{const p=doc.createElement('mxPoint');p.setAttribute('x',String(round(point.x)));p.setAttribute('y',String(round(point.y)));array.appendChild(p);});geometry.appendChild(array);}if(edge.labelOffset&&(Math.abs(edge.labelOffset.x)>0.01||Math.abs(edge.labelOffset.y)>0.01)){const o=doc.createElement('mxPoint');o.setAttribute('as','offset');o.setAttribute('x',String(round(edge.labelOffset.x)));o.setAttribute('y',String(round(edge.labelOffset.y)));geometry.appendChild(o);}root.appendChild(edgeCell);emitted.add(edge.id);}
+    function appendEdgeCell(edge){ensureEdgeDefaults(edge);const edgeCell=createMxCell(doc,{id:edge.id,value:drawioLabel(edge.label||''),style:buildEdgeStyle(edge),edge:'1',parent:'1',source:edge.source||undefined,target:edge.target||undefined,localLockText:edge.locks?.text?'1':undefined,localLockAll:edge.locks?.all?'1':undefined},{relative:'1'});const geometry=edgeCell.querySelector('mxGeometry');
+      /* An end with no shape is written back as the free point draw.io reads it from. */
+      [['sourcePoint',!edge.source&&edge.sourcePoint],['targetPoint',!edge.target&&edge.targetPoint]].forEach(([name,point])=>{
+        if(!point)return;const p=doc.createElement('mxPoint');p.setAttribute('as',name);
+        p.setAttribute('x',String(round(point.x)));p.setAttribute('y',String(round(point.y)));geometry.appendChild(p);});if(edge.waypoints?.length){const array=doc.createElement('Array');array.setAttribute('as','points');edge.waypoints.forEach((point)=>{const p=doc.createElement('mxPoint');p.setAttribute('x',String(round(point.x)));p.setAttribute('y',String(round(point.y)));array.appendChild(p);});geometry.appendChild(array);}if(edge.labelOffset&&(Math.abs(edge.labelOffset.x)>0.01||Math.abs(edge.labelOffset.y)>0.01)){const o=doc.createElement('mxPoint');o.setAttribute('as','offset');o.setAttribute('x',String(round(edge.labelOffset.x)));o.setAttribute('y',String(round(edge.labelOffset.y)));geometry.appendChild(o);}root.appendChild(edgeCell);emitted.add(edge.id);}
     function appendPool(pool){
       ensureSwimlaneDefaults(pool);
       /* A pool with a heading band is written as draw.io writes one - a swimlane carrying the title, with
@@ -7624,7 +7631,6 @@
       if (!raw.edge) return;
       const source = raw.element.getAttribute('source');
       const target = raw.element.getAttribute('target');
-      if (!source || !target) { warnings.push('One unattached connector was skipped.'); return; }
       const route = raw.styleProps.edgeStyle && raw.styleProps.edgeStyle !== 'none' ? 'orthogonal' : 'straight';
       const startArrow = normalizeArrow(raw.styleProps.startArrow || 'none', 'none');
       const endArrow = normalizeArrow(raw.styleProps.endArrow || 'block', 'block');
@@ -7640,9 +7646,23 @@
         y: Number(point.getAttribute('y') || 0) + waypointOrigin.y
       }));
       const offsetPoint = geometry?.querySelector(':scope > mxPoint[as="offset"]');
+      /* A connector need not join two shapes. draw.io lets either end hang free and stores where it
+         hangs, in the same coordinates as the bends. Those connectors were dropped on import, so a
+         diagram came in missing lines it visibly has. */
+      const freeEnd = (name) => {
+        const point = geometry?.querySelector(`:scope > mxPoint[as="${name}"]`);
+        if (!point) return null;
+        return { x: Number(point.getAttribute('x') || 0) + waypointOrigin.x,
+          y: Number(point.getAttribute('y') || 0) + waypointOrigin.y };
+      };
+      const sourcePoint = source ? null : freeEnd('sourcePoint');
+      const targetPoint = target ? null : freeEnd('targetPoint');
+      if ((!source && !sourcePoint) || (!target && !targetPoint)) {
+        warnings.push('One connector with no end points at all was skipped.'); return;
+      }
       const edge = {
         id: raw.id,
-        kind: 'edge', source, target,
+        kind: 'edge', source: source || null, target: target || null, sourcePoint, targetPoint,
         sourcePort: portFromStyle(raw.styleProps, 'exit'),
         targetPort: portFromStyle(raw.styleProps, 'entry'),
         label: stripHtmlLabel(raw.value),
@@ -7670,7 +7690,9 @@
 
     const validIds = new Set(cells.filter(isVertex).map((cell) => cell.id));
     const beforeEdges = cells.length;
-    const filtered = cells.filter((cell) => !isEdge(cell) || (validIds.has(cell.source) && validIds.has(cell.target)));
+    const attached = (id, free) => (id ? validIds.has(id) : Boolean(free));
+    const filtered = cells.filter((cell) => !isEdge(cell)
+      || (attached(cell.source, cell.sourcePoint) && attached(cell.target, cell.targetPoint)));
     if (filtered.length !== beforeEdges) warnings.push('Connectors whose endpoints could not be represented were skipped.');
     const rawOrder = new Map([...rawCells.keys()].map((id, index) => [id, index]));
     filtered.sort((a, b) => (rawOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rawOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER));
@@ -15600,7 +15622,7 @@
   const V2_ALPHA46_VERSION='2.0.0-alpha.2.26',V2_ALPHA46_RELEASE_KEY='jandostudio.releaseNotes.alpha46';
   const v2Alpha46RouteCache=new WeakMap();
   const v2Alpha46BaseEdgeEndpoints=edgeEndpoints;
-  edgeEndpoints=function(edge){const endpoints=v2Alpha46BaseEdgeEndpoints(edge);if(!endpoints||edge.route!=='orthogonal'||edge.waypoints?.length)return endpoints;const sourcePort=normalizePortName(edge.sourcePort)==='auto'?inferredPort(center(endpoints.source),center(endpoints.target),true):normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort)==='auto'?inferredPort(center(endpoints.source),center(endpoints.target),false):normalizePortName(edge.targetPort);return{...endpoints,start:v2Alpha44PortPoint(endpoints.source,sourcePort),end:v2Alpha44PortPoint(endpoints.target,targetPort)};};
+  edgeEndpoints=function(edge){const endpoints=v2Alpha46BaseEdgeEndpoints(edge);if(!endpoints||!endpoints.source||!endpoints.target||edge.route!=='orthogonal'||edge.waypoints?.length)return endpoints;const sourcePort=normalizePortName(edge.sourcePort)==='auto'?inferredPort(center(endpoints.source),center(endpoints.target),true):normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort)==='auto'?inferredPort(center(endpoints.source),center(endpoints.target),false):normalizePortName(edge.targetPort);return{...endpoints,start:v2Alpha44PortPoint(endpoints.source,sourcePort),end:v2Alpha44PortPoint(endpoints.target,targetPort)};};
   const v2Alpha46BaseRoutePoints=routePoints;
 
   function v2Alpha46VisibleRoutingCells(source,target){
@@ -17715,7 +17737,7 @@
   window.localDiagramEditor.shortcuts={get:()=>({...v186Shortcuts}),set:(id,combo)=>{if(!(id in V186_DEFAULT_SHORTCUTS))return false;v186Shortcuts[id]=combo;localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));return true;},reset:()=>{v186Shortcuts={...V186_DEFAULT_SHORTCUTS};localStorage.setItem(V186_SHORTCUT_KEY,JSON.stringify(v186Shortcuts));}};
   window.localDiagramEditor.exportDocumentXml=()=>buildDrawioXml();window.localDiagramEditor.importDocumentXml=(text,filename='Opened.drawio')=>importDrawioXml(text,filename);window.localDiagramEditor.openShortcuts=v186OpenShortcuts;window.localDiagramEditor.startTour=()=>v186StartTour(true);window.localDiagramEditor.copyStyle=copyStyle;window.localDiagramEditor.pasteStyle=pasteStyle;window.localDiagramEditor.styleBrush=toggleFormatPainter;
   /* ================= JandoStudio public white-label edition ================= */
-  const JANDO_VERSION='2.1.0-alpha.37';
+  const JANDO_VERSION='2.1.0-alpha.38';
   const JANDO_ICON_URI="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20x%3D%223%22%20y%3D%223%22%20width%3D%2258%22%20height%3D%2258%22%20rx%3D%2213%22%20fill%3D%22%23ffffff%22%20stroke%3D%22%23172033%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M40%2014v27c0%209-6%2014-15%2014-7%200-12-3-15-8l8-6c2%203%204%205%207%205%204%200%206-2%206-7V14z%22%20fill%3D%22%23246bfd%22%2F%3E%3Ccircle%20cx%3D%2247%22%20cy%3D%2218%22%20r%3D%226%22%20fill%3D%22%23f59e0b%22%2F%3E%3C%2Fsvg%3E";
 
   const jandoStyle=document.createElement('style');jandoStyle.id='jando-public-style';jandoStyle.textContent=`
@@ -17795,7 +17817,7 @@
 
   jandoNormaliseCurrentDocument();jandoRemovePrivateUi();jandoApplyBrand();jandoInstallHelp();jandoReleaseNotes();
   $('newBtn')?.addEventListener('click',()=>setTimeout(()=>{jandoNormaliseCurrentDocument();render();updateUi();jandoApplyBrand();},140));
-  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha37';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
+  window.JandoStudio=window.localDiagramEditor;window.JandoStudio.version=JANDO_VERSION;window.JandoStudio.release='public-alpha38';window.JandoStudio.exportXml=()=>buildDrawioXml();window.JandoStudio.exportDocumentXml=()=>buildDrawioXml();
   const privateApiKeys=['template','templates','workshop','workflowWorkflows','createWorkflowWorkflow','setWorkflowAreas','createWorkflow','workflowPresets','categories','classification','customLabels','documentStamp','jandostudioContext','createDemo'];privateApiKeys.forEach(key=>{try{delete window.JandoStudio[key];}catch{}});Object.keys(window.JandoStudio).filter(key=>/^alpha/i.test(key)).forEach(key=>{try{delete window.JandoStudio[key];}catch{}});
   window.JandoStudio.publicAudit=()=>({version:window.JandoStudio.version,title:document.title,brand:document.querySelector('.brand-copy strong')?.textContent||'',workspaces:[...document.querySelectorAll('.workspace-switch-btn')].filter(node=>getComputedStyle(node).display!=='none').map(node=>node.querySelector('span:last-child')?.textContent.trim()||node.textContent.trim()),qualityHidden:getComputedStyle($('qualityWorkspaceBtn')).display==='none',workflowPresent:Boolean($('v191WorkflowBtn')),classPanelPresent:Boolean($('v11111CategoryPanel')),businessExports:[...document.querySelectorAll('#exportMenu [data-export]')].map(node=>node.dataset.export),exportAvailable:Boolean($('exportBtn')||$('captureBtn')),storagePrefix:'jandostudio',metadataFree:!/(localCategory|localWorkflow|localTaskSystem|localBusinessSystem|localDatabasePreset|localDocumentStamp)/i.test(buildDrawioXml())});
   window.localDiagramEditor.version=JANDO_VERSION;render();updateViewBox();jandoApplyBrand();
@@ -17934,7 +17956,7 @@
   const jandoBaseEdgeEndpoints=edgeEndpoints;
   edgeEndpoints=function(edge){
     const endpoints=jandoBaseEdgeEndpoints(edge);
-    if(!endpoints||!edge?.portBias)return endpoints;
+    if(!endpoints||!edge?.portBias||!endpoints.source||!endpoints.target)return endpoints;
     const sourcePort=normalizePortName(edge.sourcePort),targetPort=normalizePortName(edge.targetPort);
     const start=sourcePort==='auto'?endpoints.start:v21Alpha12PortPoint(endpoints.source,sourcePort,edge.portBias.source);
     const end=targetPort==='auto'?endpoints.end:v21Alpha12PortPoint(endpoints.target,targetPort,edge.portBias.target);
@@ -18705,14 +18727,15 @@
          same set of cases mxGraph hands to SegmentConnector. */
       const source=getCell(edge.source),target=getCell(edge.target);
       const ends=edgeEndpoints(edge);
-      if(source&&target&&ends?.start&&ends?.end){
+      if((source||target)&&ends?.start&&ends?.end){
         const sourceFixed=normalizePortName(edge.sourcePort)!=='auto';
         const targetFixed=normalizePortName(edge.targetPort)!=='auto';
         const middle=v21Alpha27OrthConnector(edge,source,target,ends.start,ends.end,sourceFixed,targetFixed);
         if(middle&&middle.length){
-          /* A floating end attaches wherever the finished route arrives from. */
-          const start=sourceFixed?ends.start:v21Alpha33FloatingEnd(source,middle[0],ends.start);
-          const end=targetFixed?ends.end:v21Alpha33FloatingEnd(target,middle[middle.length-1],ends.end);
+          /* A floating end attaches wherever the finished route arrives from. A free end has no shape to
+             attach to, so it stays on its point. */
+          const start=source&&!sourceFixed?v21Alpha33FloatingEnd(source,middle[0],ends.start):ends.start;
+          const end=target&&!targetFixed?v21Alpha33FloatingEnd(target,middle[middle.length-1],ends.end):ends.end;
           return dedupeRoutePoints([start,...middle,end]);
         }
         if(middle)return dedupeRoutePoints([ends.start,...middle,ends.end]);
@@ -18868,19 +18891,25 @@
      shapes present against each other. Passing a concrete point for both ends pinned every connector to
      whatever side it already had, which is what left 14 of 383 leaving their shape the wrong way. */
   function v21Alpha27OrthConnector(edge,source,target,p0,pe,sourceFixed=true,targetFixed=true){
-    if(!source||!target||!p0||!pe)return null;
+    if(!p0||!pe)return null;
+    if(!source&&!target)return null;
     const C=V21A27;
-    const first=sourceFixed?p0:null,last=targetFixed?pe:null;
+    /* An end with no shape is a terminal of no size at the point the file gives it, which is how mxGraph
+       treats one. Its side is still the router's to choose, because the choice is gated on there being a
+       shape there, not on the point being known. */
+    const first=source&&sourceFixed?p0:null,last=target&&targetFixed?pe:null;
+    const absStart=!source||sourceFixed?p0:null,absEnd=!target||targetFixed?pe:null;
     const sourceBuffer=v21Alpha27JettySize(edge,true);
     const targetBuffer=v21Alpha27JettySize(edge,false);
     const totalBuffer=targetBuffer+sourceBuffer;
     /* Too close together for the jetties to fit: mxGraph hands these to SegmentConnector. It measures
-       that between the fixed points, so a floating end never triggers it. */
-    if(first&&last){
-      const ddx=last.x-first.x,ddy=last.y-first.y;
+       that between the known points, so a floating end never triggers it. */
+    if(absStart&&absEnd){
+      const ddx=absEnd.x-absStart.x,ddy=absEnd.y-absStart.y;
       if(ddx*ddx+ddy*ddy<totalBuffer*totalBuffer)return null;
     }
-    const geo=[[source.x,source.y,source.w,source.h],[target.x,target.y,target.w,target.h]];
+    const geo=[source?[source.x,source.y,source.w,source.h]:[p0.x,p0.y,0,0],
+      target?[target.x,target.y,target.w,target.h]:[pe.x,pe.y,0,0]];
     const buffer=[sourceBuffer,targetBuffer];
     const limits=[[0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0]];
     for(let i=0;i<2;i++){
