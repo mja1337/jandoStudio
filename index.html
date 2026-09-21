@@ -20550,6 +20550,16 @@
   };
 
 
+  /* Opening a PNG showed the loading overlay and then asked, underneath it, whether to open the image as
+     an image. The overlay is fixed over the whole window at z-index 9999 and modals sit at 1000, so the
+     question could never be answered and the spinner turned for ever with nothing in the console. Any
+     dialog has to sit above the thing that says the app is busy, because a dialog is the app asking to
+     stop being busy. */
+  const v21Alpha46ModalLayer=document.createElement('style');
+  v21Alpha46ModalLayer.id='v21a46ModalLayer';
+  v21Alpha46ModalLayer.textContent='.modal-backdrop{z-index:10050!important}';
+  document.head.appendChild(v21Alpha46ModalLayer);
+
   render();
 
 })();
