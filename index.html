@@ -20843,7 +20843,18 @@
 
   /* Add the NetSuite implementation vocabulary to existing documents as well as new ones. Definitions a
      user has already renamed or recoloured are preserved; only absent built-in tags are appended. */
-  const V21_ALPHA52_NETSUITE_TAGS=defaultTagDefinitions().filter(tag=>tag.id.startsWith('tag-ns-'));
+const V21_ALPHA52_NETSUITE_TAGS=[
+  {id:'tag-ns-record',label:'NS record',color:'#1d4ed8'},
+  {id:'tag-ns-custom-record',label:'NS custom record',color:'#7c3aed'},
+  {id:'tag-ns-transaction',label:'NS transaction',color:'#0f766e'},
+  {id:'tag-ns-entity',label:'NS entity',color:'#be123c'},
+  {id:'tag-ns-script-trigger',label:'NS script trigger',color:'#c2410c'},
+  {id:'tag-ns-user-event',label:'NS user event',color:'#dc2626'},
+  {id:'tag-ns-client-event',label:'NS client event',color:'#0284c7'},
+  {id:'tag-ns-scheduled-mr',label:'NS scheduled / M-R',color:'#6d28d9'},
+  {id:'tag-ns-api',label:'NS Suitelet / RESTlet',color:'#047857'},
+  {id:'tag-ns-workflow-action',label:'NS workflow action',color:'#a21caf'}
+];
   const v21Alpha52BaseNormaliseTags=normaliseTagDefinitions;
   normaliseTagDefinitions=function(){
     v21Alpha52BaseNormaliseTags();
