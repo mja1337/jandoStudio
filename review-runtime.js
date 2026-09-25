@@ -8,12 +8,18 @@ function jandoReviewRuntime() {
   const TIP_KEY = 'jandostudio.processPack.tip.v1';
   const SIDEBAR_KEY = 'jandostudio.processPack.sidebar.v1';
   const pageIndexById = new Map(pack.pages.map((p, i) => [p.pageId, i]));
-  const crossLinkedPageIds = new Set();
+  // outgoingPageIds: this page has a shape that links OUT to another process.
+  // incomingPageIds: this page is the TARGET of a link from some other process.
+  const outgoingPageIds = new Set();
+  const incomingPageIds = new Set();
   pack.pages.forEach(p => {
-    if (p.renderedSvg.includes('data-link-page')) crossLinkedPageIds.add(p.pageId);
-    (p.renderedSvg.match(/data-link-page="[^"]+"/g) || []).forEach(m => crossLinkedPageIds.add(m.slice(16, -1)));
+    const targets = (p.renderedSvg.match(/data-link-page="[^"]+"/g) || []).map(m => m.slice(16, -1));
+    if (targets.length) outgoingPageIds.add(p.pageId);
+    targets.forEach(id => incomingPageIds.add(id));
   });
-  const hasCrossLinks = crossLinkedPageIds.size > 0;
+  const hasCrossLinks = outgoingPageIds.size > 0 || incomingPageIds.size > 0;
+  const XREF_OUT_ICON = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M2.5 7.5L7.5 2.5M7.5 2.5H3.5M7.5 2.5V6.5" stroke="#d97706" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const XREF_IN_ICON = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M7.5 2.5L2.5 7.5M2.5 7.5H6.5M2.5 7.5V3.5" stroke="#246bfd" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   $('rpTitle').textContent = pack.packName;
   $('rpSubtitle').textContent = pack.pages.length + ' process' + (pack.pages.length === 1 ? '' : 'es');
@@ -32,7 +38,13 @@ function jandoReviewRuntime() {
       const idx = document.createElement('span'); idx.className = 'rp-row-index'; idx.textContent = (i + 1) + '.';
       const name = document.createElement('span'); name.className = 'rp-row-name'; name.textContent = p.pageName;
       b.append(idx, name);
-      if (crossLinkedPageIds.has(p.pageId)) { const dot = document.createElement('span'); dot.className = 'rp-row-xref'; dot.title = 'Links to or from another process'; b.appendChild(dot); }
+      const isOut = outgoingPageIds.has(p.pageId), isIn = incomingPageIds.has(p.pageId);
+      if (isOut || isIn) {
+        const mark = document.createElement('span'); mark.className = 'rp-row-xref';
+        mark.title = isOut && isIn ? 'Links to and from other processes' : isOut ? 'Links out to another process' : 'Referenced by another process';
+        mark.innerHTML = (isOut ? XREF_OUT_ICON : '') + (isIn ? XREF_IN_ICON : '');
+        b.appendChild(mark);
+      }
       b.onclick = () => go(i);
       $('rpList').appendChild(b);
     });
