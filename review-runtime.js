@@ -8,7 +8,12 @@ function jandoReviewRuntime() {
   const TIP_KEY = 'jandostudio.processPack.tip.v1';
   const SIDEBAR_KEY = 'jandostudio.processPack.sidebar.v1';
   const pageIndexById = new Map(pack.pages.map((p, i) => [p.pageId, i]));
-  const hasCrossLinks = pack.pages.some(p => p.renderedSvg.includes('data-link-page'));
+  const crossLinkedPageIds = new Set();
+  pack.pages.forEach(p => {
+    if (p.renderedSvg.includes('data-link-page')) crossLinkedPageIds.add(p.pageId);
+    (p.renderedSvg.match(/data-link-page="[^"]+"/g) || []).forEach(m => crossLinkedPageIds.add(m.slice(16, -1)));
+  });
+  const hasCrossLinks = crossLinkedPageIds.size > 0;
 
   $('rpTitle').textContent = pack.packName;
   $('rpSubtitle').textContent = 'Round ' + pack.reviewRound + ' · ' + pack.pages.length + ' processes';
@@ -27,7 +32,7 @@ function jandoReviewRuntime() {
       const idx = document.createElement('span'); idx.className = 'rp-row-index'; idx.textContent = (i + 1) + '.';
       const name = document.createElement('span'); name.className = 'rp-row-name'; name.textContent = p.pageName;
       b.append(idx, name);
-      if (p.jiraLink) { const dot = document.createElement('span'); dot.className = 'rp-row-jira'; dot.title = 'Has a Jira link'; b.appendChild(dot); }
+      if (crossLinkedPageIds.has(p.pageId)) { const dot = document.createElement('span'); dot.className = 'rp-row-xref'; dot.title = 'Links to or from another process'; b.appendChild(dot); }
       b.onclick = () => go(i);
       $('rpList').appendChild(b);
     });
@@ -62,6 +67,12 @@ function jandoReviewRuntime() {
   $('rpZoomOut').onclick = () => { zoom = Math.max(.05, zoom / 1.25); size(); };
   $('pageSearch').oninput = renderList;
   $('areaFilter').onchange = renderList;
+
+  $('rpCanvas').addEventListener('wheel', e => {
+    e.preventDefault();
+    zoom = Math.max(.05, Math.min(8, zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+    size();
+  }, { passive: false });
 
   let sidebarOpen = false;
   try { sidebarOpen = localStorage.getItem(SIDEBAR_KEY) === 'open'; } catch {}
