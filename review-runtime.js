@@ -59,6 +59,25 @@ function jandoReviewRuntime() {
     zoom = Math.max(.05, Math.min(4, ($('rpCanvas').clientWidth - 48) / Number(doc.getAttribute('width'))));
     size();
   }
+  // Zooms toward a fixed point in the viewport (offsetX/offsetY, relative to the canvas's own
+  // box) instead of the scroll-top-left corner, so the thing under the cursor/center stays put
+  // as the page scales. Captures the content-space point before resizing — reading scrollLeft
+  // back out after size() runs isn't safe, since the browser can silently clamp it during reflow
+  // when zooming out shrinks the scrollable area.
+  function zoomAround(factor, offsetX, offsetY) {
+    const canvas = $('rpCanvas'), prevZoom = zoom;
+    zoom = Math.max(.05, Math.min(8, zoom * factor));
+    if (zoom === prevZoom) return;
+    const ratio = zoom / prevZoom;
+    const cx = canvas.scrollLeft + offsetX, cy = canvas.scrollTop + offsetY;
+    size();
+    canvas.scrollLeft = cx * ratio - offsetX;
+    canvas.scrollTop = cy * ratio - offsetY;
+  }
+  function zoomAroundCenter(factor) {
+    const canvas = $('rpCanvas');
+    zoomAround(factor, canvas.clientWidth / 2, canvas.clientHeight / 2);
+  }
   function render() {
     const p = pack.pages[index];
     $('rpSlide').innerHTML = p.renderedSvg;
@@ -70,21 +89,44 @@ function jandoReviewRuntime() {
     renderList(); fit(); $('rpCanvas').scrollTo(0, 0);
     try { localStorage.setItem(storageKey, JSON.stringify({ index })); } catch {}
   }
-  function go(i) { if (i < 0 || i >= pack.pages.length) return; index = i; render(); }
+  let returnStack = [];
+  function updateBackButton() {
+    if (!returnStack.length) { $('rpBack').hidden = true; return; }
+    const fromPage = pack.pages[returnStack[returnStack.length - 1]];
+    const label = fromPage.pageName.replace(/^Operational Process\s*[-:]\s*/i, '');
+    $('rpBack').hidden = false;
+    $('rpBack').title = 'Back to ' + fromPage.pageName;
+    $('rpBackLabel').textContent = 'Back to ' + label;
+  }
+  function go(i) {
+    if (i < 0 || i >= pack.pages.length) return;
+    if (returnStack.length && returnStack[returnStack.length - 1] === i) returnStack.pop();
+    index = i;
+    render();
+    updateBackButton();
+  }
+  $('rpBack').onclick = () => { if (returnStack.length) go(returnStack.pop()); };
 
   $('rpPrev').onclick = () => go(index - 1);
   $('rpNext').onclick = () => go(index + 1);
   $('rpFit').onclick = fit;
-  $('rpZoomIn').onclick = () => { zoom = Math.min(8, zoom * 1.25); size(); };
-  $('rpZoomOut').onclick = () => { zoom = Math.max(.05, zoom / 1.25); size(); };
+  $('rpZoomIn').onclick = () => zoomAroundCenter(1.25);
+  $('rpZoomOut').onclick = () => zoomAroundCenter(1 / 1.25);
   $('pageSearch').oninput = renderList;
   $('areaFilter').onchange = renderList;
 
   $('rpCanvas').addEventListener('wheel', e => {
     e.preventDefault();
-    zoom = Math.max(.05, Math.min(8, zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-    size();
+    const rect = $('rpCanvas').getBoundingClientRect();
+    zoomAround(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top);
   }, { passive: false });
+
+  let resizeQueued = false;
+  window.addEventListener('resize', () => {
+    if (resizeQueued) return;
+    resizeQueued = true;
+    requestAnimationFrame(() => { resizeQueued = false; fit(); });
+  });
 
   let sidebarOpen = false;
   try { sidebarOpen = localStorage.getItem(SIDEBAR_KEY) === 'open'; } catch {}
@@ -104,7 +146,9 @@ function jandoReviewRuntime() {
     const el = e.target.closest('[data-link-page]');
     if (!el) return;
     const i = pageIndexById.get(el.getAttribute('data-link-page'));
-    if (i !== undefined) go(i);
+    if (i === undefined || i === index) return;
+    returnStack.push(index);
+    go(i);
   });
 
   window.addEventListener('keydown', e => {
@@ -122,6 +166,7 @@ function jandoReviewRuntime() {
   } catch {}
 
   render();
+  updateBackButton();
 
   $('rpTipClose').onclick = () => { $('rpTip').hidden = true; try { localStorage.setItem(TIP_KEY, 'seen'); } catch {} };
   try {
