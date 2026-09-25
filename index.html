@@ -2307,15 +2307,6 @@
     };
   }
 
-  function laneMinimumExtent(pool, lane) {
-    /* A horizontal pool rotates its lane title 90° so it runs along the lane's own thickness —
-       that thickness must fit the whole label, or neighbouring titles visually bleed into each other. */
-    const rotated = pool.orientation !== 'vertical' && pool.titleDirection !== 'horizontal';
-    if (!rotated) return 24;
-    const label = `${lane.collapsed ? '▸ ' : ''}${lane.name || ''}${lane.hidden ? ' · hidden' : ''}`;
-    const fontSize = Number(pool.fontSize) || 13;
-    return Math.max(24, Math.ceil(label.length * fontSize * 0.62 + 14));
-  }
   function ensureSwimlaneDefaults(pool) {
     if (!pool || pool.shape !== 'swimlane') return pool;
     pool.orientation = pool.orientation === 'vertical' ? 'vertical' : 'horizontal';
@@ -2337,19 +2328,6 @@
       hidden: Boolean(lane.hidden),
       expandedSize: lane.expandedSize ? Number(lane.expandedSize) : null
     }));
-    /* Grow the pool (never shrink it) so every lane keeps its current relative share while still
-       meeting its own title's minimum — a lane can't be resized smaller than its label needs. */
-    const total = pool.lanes.reduce((sum, lane) => sum + lane.size, 0);
-    let neededDimension = dimension;
-    pool.lanes.forEach((lane) => {
-      const min = laneMinimumExtent(pool, lane);
-      const requiredDimension = min * total / lane.size;
-      if (requiredDimension > neededDimension) neededDimension = requiredDimension;
-    });
-    if (neededDimension > dimension + 0.5) {
-      if (pool.orientation === 'vertical') pool.w = pool.headerSize + neededDimension;
-      else pool.h = pool.headerSize + neededDimension;
-    }
     return pool;
   }
 
@@ -3622,10 +3600,18 @@
       const ty = titleRect.y + titleRect.height / 2;
       let rotation = 0;
       if (!vertical && cell.titleDirection !== 'horizontal') rotation = cell.titleDirection === 'top-down' ? 90 : -90;
+      const rawLabel = `${lane.collapsed ? '▸ ' : ''}${lane.name}${lane.hidden ? ' · hidden' : ''}`;
+      /* The title runs along whichever axis it's actually laid out on — the lane's own thickness once
+         rotated, otherwise the title column's width. Shrink-to-fit only; never touch pool/lane geometry,
+         which connectors and imported shape positions are anchored to. */
+      let fontSize = Number(cell.fontSize) || 13;
+      const available = (rotation ? metric.height : titleRect.width) - 10;
+      const estimated = rawLabel.length * fontSize * 0.62;
+      if (available > 0 && estimated > available) fontSize = Math.max(7, fontSize * (available / estimated));
       const label = sEl('text', {
         x: tx, y: ty,
         fill: cell.fontColor || '#1f2937',
-        'font-size': cell.fontSize || 13,
+        'font-size': fontSize,
         'font-family': 'Arial, Helvetica, sans-serif',
         'font-weight': 600,
         'text-anchor': 'middle',
@@ -3633,7 +3619,7 @@
         transform: rotation ? `rotate(${rotation} ${tx} ${ty})` : undefined,
         'pointer-events': 'none'
       });
-      label.textContent = `${lane.collapsed ? '▸ ' : ''}${lane.name}${lane.hidden ? ' · hidden' : ''}`;
+      label.textContent = rawLabel;
       group.append(rect, title, label);
     });
     targetLayer.appendChild(group);
