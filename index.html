@@ -20508,10 +20508,15 @@
     label.setAttribute('font-size',String(layout.size));
     label.textContent=layout.lines[0];
     if(layout.lines.length<2)return;
-    /* The second line sits beside the first across the strip. For a rotated title that is an offset in x,
-       which the rotation turns into the perpendicular; for an upright one it is an offset in y. */
+    /* The second line sits beside the first across the strip. Shifting the label's own local y before
+       the (possibly rotated) transform is applied always lands the two lines side-by-side across the
+       strip's width on screen — for an upright title that's a plain y offset with no rotation to move
+       it; for a title rotated ±90° into the lane, that same local-y offset becomes the on-screen x
+       offset (rotating x=0,y=dy about the centre yields x=±dy,y=0), which is the cross-axis in both
+       cases. Offsetting local x instead (as this used to) moves along the *reading* direction once
+       rotated, so the two lines end up stacked almost on top of each other instead of side by side. */
     const shift=layout.size*0.58;
-    const axis=vertical?'y':'x';
+    const axis='y';
     const centre=Number(label.getAttribute(axis))||0;
     label.setAttribute(axis,String(centre-shift));
     const second=label.cloneNode(false);
@@ -21255,7 +21260,21 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     }
   }
   const REVIEW_CROSS_REF_SHAPES=new Set(['external','subprocess','predefined']);
-  function reviewPackCrossLinks(currentPage,exportPages){
+  /* A cross-reference shape's text is usually written against whatever the target page's own swimlane
+     heading says ("Contract Creation"), which is often not the same string as that page's tab/list name
+     ("Contract & Subscription (ZAB)") — the two get renamed independently over time. Matching against
+     the page name alone misses these, so this collects each page's own swimlane title(s) first, and
+     matching tries both. */
+  async function reviewPackSwimlaneTitles(pages){
+    const titles=new Map(),originalPageId=state.currentPageId;
+    for(const page of pages){
+      await v18LoadPage(page.id);await new Promise(resolve=>setTimeout(resolve,0));
+      titles.set(page.id,(state.cells||[]).filter(cell=>cell.shape==='swimlane'&&cell.label).map(cell=>cell.label));
+    }
+    if(originalPageId)await v18LoadPage(originalPageId);
+    return titles;
+  }
+  function reviewPackCrossLinks(currentPage,exportPages,swimlaneTitles){
     const candidates=(state.cells||[]).filter(cell=>REVIEW_CROSS_REF_SHAPES.has(cell.shape)&&/^-+>/.test(String(cell.label||'').trim()));
     const linkMap={},linkIcons=[];let unresolved=0;
     candidates.forEach(cell=>{
@@ -21264,7 +21283,8 @@ const V21_ALPHA52_NETSUITE_TAGS=[
       let best=null,bestScore=0;
       exportPages.forEach(page=>{
         if(page.id===currentPage.id)return;
-        const score=reviewMatchScore(cleaned,reviewStripTitlePrefix(page.name));
+        const candidateLabels=[reviewStripTitlePrefix(page.name),...(swimlaneTitles?.get(page.id)||[])];
+        const score=Math.max(...candidateLabels.map(label=>reviewMatchScore(cleaned,label)));
         if(score>bestScore){bestScore=score;best=page;}
       });
       if(best&&bestScore>=0.4){linkMap[cell.id]=best.id;linkIcons.push({x:cell.x,y:cell.y,w:cell.w,h:cell.h});}
@@ -21274,14 +21294,15 @@ const V21_ALPHA52_NETSUITE_TAGS=[
   }
   async function reviewPackGenerate(){
     reviewPackReadMetadata();const pages=reviewPackPageList().filter(page=>reviewPackState.selected.has(page.id));if(!pages.length)return showToast('Select at least one page.');
-    reviewPackSetProgress(true,'Preparing standalone pages…',0);$('reviewPackGenerate').disabled=true;
+    reviewPackSetProgress(true,'Reading page titles…',0);$('reviewPackGenerate').disabled=true;
     const originalPageId=state.currentPageId,entries=[],editorHistory={undo:state.undo,redo:state.redo,selected:new Set(state.selected)};
     let unresolvedTotal=0,linkedTotal=0;
     try{
+      const swimlaneTitles=await reviewPackSwimlaneTitles(pages);
       for(let index=0;index<pages.length;index++){
         const page=pages[index];await v18LoadPage(page.id);await new Promise(resolve=>setTimeout(resolve,0));
         const canonicalSource=reviewPackStable({page:state.page,cells:state.cells,paintData:state.paintData,layers:state.layers,unsupported:page.unsupported||[]});
-        const cross=reviewPackCrossLinks(page,pages);
+        const cross=reviewPackCrossLinks(page,pages,swimlaneTitles);
         unresolvedTotal+=cross.unresolved;linkedTotal+=Object.keys(cross.linkMap).length;
         const renderedSvg=reviewPackSafeSvg(exportSvgMarkup({x:0,y:0,w:Number(state.page.width||DEFAULT_PAGE.width),h:Number(state.page.height||DEFAULT_PAGE.height)},{transparent:true,linkMap:cross.linkMap,linkIcons:cross.linkIcons}));
         const pageMeta=reviewPageMetaResolved(page);
