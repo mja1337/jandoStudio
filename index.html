@@ -1702,6 +1702,7 @@
   </div>
 </div>
 
+<script src="review-runtime.js"></script>
 <script>
 (() => {
   'use strict';
@@ -2306,6 +2307,15 @@
     };
   }
 
+  function laneMinimumExtent(pool, lane) {
+    /* A horizontal pool rotates its lane title 90° so it runs along the lane's own thickness —
+       that thickness must fit the whole label, or neighbouring titles visually bleed into each other. */
+    const rotated = pool.orientation !== 'vertical' && pool.titleDirection !== 'horizontal';
+    if (!rotated) return 24;
+    const label = `${lane.collapsed ? '▸ ' : ''}${lane.name || ''}${lane.hidden ? ' · hidden' : ''}`;
+    const fontSize = Number(pool.fontSize) || 13;
+    return Math.max(24, Math.ceil(label.length * fontSize * 0.62 + 14));
+  }
   function ensureSwimlaneDefaults(pool) {
     if (!pool || pool.shape !== 'swimlane') return pool;
     pool.orientation = pool.orientation === 'vertical' ? 'vertical' : 'horizontal';
@@ -2327,6 +2337,19 @@
       hidden: Boolean(lane.hidden),
       expandedSize: lane.expandedSize ? Number(lane.expandedSize) : null
     }));
+    /* Grow the pool (never shrink it) so every lane keeps its current relative share while still
+       meeting its own title's minimum — a lane can't be resized smaller than its label needs. */
+    const total = pool.lanes.reduce((sum, lane) => sum + lane.size, 0);
+    let neededDimension = dimension;
+    pool.lanes.forEach((lane) => {
+      const min = laneMinimumExtent(pool, lane);
+      const requiredDimension = min * total / lane.size;
+      if (requiredDimension > neededDimension) neededDimension = requiredDimension;
+    });
+    if (neededDimension > dimension + 0.5) {
+      if (pool.orientation === 'vertical') pool.w = pool.headerSize + neededDimension;
+      else pool.h = pool.headerSize + neededDimension;
+    }
     return pool;
   }
 
@@ -3263,7 +3286,7 @@
     return `data:image/svg+xml,${encodeURIComponent(markup)}`;
   }
 
-  function exportSvgMarkup(bounds) {
+  function exportSvgMarkup(bounds, opts) {
     const exportSvg = document.createElementNS(SVG_NS, 'svg');
     exportSvg.setAttribute('xmlns', SVG_NS);
     exportSvg.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
@@ -3273,11 +3296,26 @@
     const style = document.createElementNS(SVG_NS, 'style');
     style.textContent = `.edge-hit{display:none}.edge-visible{fill:none}.edge-label-hit{fill:#fff;stroke:none}.diagram-node,.diagram-edge{font-family:Arial,Helvetica,sans-serif}`;
     exportSvg.appendChild(style);
-    exportSvg.appendChild(sEl('rect',{x:bounds.x,y:bounds.y,width:bounds.w,height:bounds.h,fill:'#dfe4ea'}));
-    exportSvg.appendChild(sEl('rect',{x:0,y:0,width:state.page.width,height:state.page.height,fill:state.page.background||'#ffffff',stroke:'#cfd5df','stroke-width':'1'}));
+    if (!opts?.transparent) {
+      exportSvg.appendChild(sEl('rect',{x:bounds.x,y:bounds.y,width:bounds.w,height:bounds.h,fill:'#dfe4ea'}));
+      exportSvg.appendChild(sEl('rect',{x:0,y:0,width:state.page.width,height:state.page.height,fill:state.page.background||'#ffffff',stroke:'#cfd5df','stroke-width':'1'}));
+    }
     const diagramClone = diagramLayer.cloneNode(true);
     diagramClone.querySelectorAll('.edge-hit').forEach((node)=>node.remove());
+    if (opts?.linkMap) {
+      Object.entries(opts.linkMap).forEach(([cellId,targetPageId])=>{
+        const el = diagramClone.querySelector(`.diagram-node[data-cell-id="${cellId}"]`);
+        if (el) el.setAttribute('data-link-page', targetPageId);
+      });
+    }
     exportSvg.appendChild(diagramClone);
+    if (opts?.linkIcons) {
+      opts.linkIcons.forEach(icon=>{
+        const badge = sEl('text',{x:icon.x+icon.w-9,y:icon.y+15,'text-anchor':'middle','font-size':13,'font-weight':700,fill:'#246bfd',style:'pointer-events:none'});
+        badge.textContent = '↗';
+        exportSvg.appendChild(badge);
+      });
+    }
     if (state.paintData) exportSvg.appendChild(sEl('image',{x:0,y:0,width:state.page.width,height:state.page.height,href:state.paintData}));
     return new XMLSerializer().serializeToString(exportSvg);
   }
@@ -20892,6 +20930,304 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     V21_ALPHA52_NETSUITE_TAGS.forEach(tag=>{if(!known.has(tag.id))state.tagDefinitions.push(deepClone(tag));});
   };
   normaliseTagDefinitions();
+
+  /* ================= Process Pack Export =================
+     Produces a standalone, self-contained HTML viewer for a selected set of pages. There is no
+     in-pack review/comment/approval workflow — that happens in Jira via the per-page link
+     configured below. The pack focuses on navigation: "-> Operational Process: X" cross-reference
+     shapes become clickable, matched by name against the pages included in this pack. */
+  const REVIEW_PACK_BUILDER_KEY='jandostudio.reviewPackBuilder.v2';
+  const REVIEW_PAGE_META_KEY='jandostudio.reviewPageMeta.v2';
+  const reviewPackState={selected:new Set(),filter:'',metadata:{packId:'PROCESS-PACK',packName:'Process Pack',reviewRound:'R1',description:''}};
+
+  function reviewStripTitlePrefix(label){
+    const text=String(label||'');
+    const match=/^Operational Process\s*[-:]\s*/i.exec(text);
+    return match?text.slice(match[0].length):text;
+  }
+  function reviewCleanCrossRefLabel(label){
+    return reviewStripTitlePrefix(String(label||'').trim().replace(/^-+>\s*/,'')).trim();
+  }
+  function reviewNormalizeForMatch(text){
+    return String(text||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  }
+  function reviewMatchScore(a,b){
+    const na=reviewNormalizeForMatch(a),nb=reviewNormalizeForMatch(b);
+    if(!na||!nb)return 0;
+    if(na===nb)return 1;
+    if(na.includes(nb)||nb.includes(na))return .85;
+    const wa=new Set(na.split(' ').filter(w=>w.length>2)),wb=new Set(nb.split(' ').filter(w=>w.length>2));
+    if(!wa.size||!wb.size)return 0;
+    const common=[...wa].filter(w=>wb.has(w));
+    return common.length?common.length/new Set([...wa,...wb]).size:0;
+  }
+  function reviewProcessParseLabel(label){
+    const clean=reviewStripTitlePrefix(label);
+    const match=/^([A-Za-z]+-\d+)\s+(.*)$/.exec(clean.trim());
+    if(match)return{processId:match[1],area:match[1].split('-')[0],name:match[2]};
+    return{processId:'',area:'',name:clean};
+  }
+  function reviewPageMetaLoad(){try{return JSON.parse(localStorage.getItem(REVIEW_PAGE_META_KEY)||'{}');}catch(error){console.warn('Page metadata unavailable',error);return{};}}
+  function reviewPageMetaSave(all){try{localStorage.setItem(REVIEW_PAGE_META_KEY,JSON.stringify(all));}catch(error){console.warn('Page metadata could not be saved',error);}}
+  function reviewPageMetaGet(pageId){return reviewPageMetaLoad()[pageId]||{};}
+  function reviewPageMetaPatch(pageId,patch){const all=reviewPageMetaLoad();all[pageId]={...all[pageId],...patch};reviewPageMetaSave(all);}
+  function reviewPageMetaResolved(page){
+    const stored=reviewPageMetaGet(page.id),derived=reviewProcessParseLabel(page.name);
+    return{processId:stored.processId??derived.processId,area:stored.area??derived.area,jiraLink:stored.jiraLink||''};
+  }
+
+  const reviewPackStyle=document.createElement('style');
+  reviewPackStyle.id='reviewPackStyle';
+  reviewPackStyle.textContent=`
+    #reviewPackBtn{white-space:nowrap}
+    .review-pack-modal{width:min(920px,94vw);max-height:min(88vh,820px);display:flex;flex-direction:column}
+    .review-pack-modal .modal-head{flex:0 0 auto}
+    .review-pack-intro{margin:0 0 14px;padding:10px 12px;border:1px solid #b9d0f2;background:#f3f7ff;color:#26456f;font-size:11px;line-height:1.45;border-radius:5px}
+    .review-pack-meta{display:grid;grid-template-columns:1.2fr 1.7fr .8fr;gap:10px;margin-bottom:14px}
+    .review-pack-field{display:grid;gap:5px;font-size:11px;font-weight:700;color:#344054}
+    .review-pack-field input,.review-pack-field textarea{width:100%;border:1px solid #cfd6df;border-radius:4px;background:#fff;color:#1f2937;padding:7px 8px;font:inherit;font-weight:400}
+    .review-pack-field textarea{min-height:52px;resize:vertical}
+    .review-pack-description{grid-column:1/-1}
+    .review-pack-pages{border:1px solid #d8dde6;border-radius:5px;background:#fff;overflow:hidden}
+    .review-pack-page-head{display:flex;align-items:center;gap:8px;padding:9px 10px;border-bottom:1px solid #d8dde6;background:#f7f8fa}
+    .review-pack-page-head strong{font-size:12px}.review-pack-page-head span{color:#667085;font-size:11px}
+    .review-pack-page-actions{margin-left:auto;display:flex;gap:6px}.review-pack-page-actions input{width:180px;max-width:30vw;border:1px solid #cfd6df;border-radius:4px;padding:6px 8px;font-size:11px}
+    .review-pack-page-list{max-height:260px;overflow:auto;padding:6px}
+    .review-pack-page-row{display:grid;grid-template-columns:22px 74px minmax(0,1fr) 82px;align-items:center;gap:8px;padding:7px 8px;border-radius:4px;font-size:11px;cursor:pointer}
+    .review-pack-page-row:hover{background:#f5f8fd}.review-pack-page-row input{margin:0}.review-pack-page-id{color:#667085;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;overflow:hidden;text-overflow:ellipsis}.review-pack-page-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.review-pack-page-number{text-align:right;color:#667085;font-variant-numeric:tabular-nums}
+    .review-pack-empty{padding:18px 10px;color:#667085;font-size:11px;text-align:center}
+    .review-pack-footer-note{margin:12px 0 0;color:#667085;font-size:10px;line-height:1.45}
+    .review-pack-progress{display:none;margin:0 18px 12px;padding:8px 10px;border:1px solid #d8dde6;background:#f7f8fa;border-radius:4px;font-size:11px;color:#475467}
+    .review-pack-progress.show{display:block}
+    .review-pack-progress-bar{height:5px;margin-top:6px;border-radius:99px;background:#dfe7f2;overflow:hidden}.review-pack-progress-bar i{display:block;height:100%;width:0;background:#246bfd;transition:width .15s ease}
+    .review-pack-section{margin-top:14px;border:1px solid #d8dde6;border-radius:6px}
+    .review-pack-section summary{cursor:pointer;padding:9px 12px;font-size:12px;font-weight:700;list-style:none}
+    .review-pack-section summary::-webkit-details-marker{display:none}
+    .review-pack-section summary:before{content:'▸ ';color:#667085}
+    .review-pack-section[open] summary:before{content:'▾ '}
+    .review-pack-section>*:not(summary){padding:0 12px 12px}
+    .review-meta-wrap{overflow:auto;max-height:260px;border:1px solid #e3e7ee;border-radius:4px}
+    table.review-meta-table{border-collapse:collapse;width:100%;font-size:11px}
+    .review-meta-table th,.review-meta-table td{border-bottom:1px solid #e3e7ee;padding:5px 7px;text-align:left;white-space:nowrap}
+    .review-meta-table thead th{position:sticky;top:0;background:#f7f8fa}
+    .review-meta-name{max-width:160px;overflow:hidden;text-overflow:ellipsis}
+    .review-meta-table input[type=text]{width:100%;min-width:90px;border:1px solid #cfd6df;border-radius:3px;padding:4px 5px;font:inherit;font-size:11px}
+    .review-meta-empty{padding:12px;color:#667085;font-size:11px;text-align:center}
+    .review-pack-bulk-jira{display:grid;grid-template-columns:1fr 2fr;gap:10px;margin-bottom:12px;align-items:start}
+    .review-pack-bulk-jira-paste textarea{width:100%;min-height:70px;resize:vertical;border:1px solid #cfd6df;border-radius:4px;padding:7px 8px;font:inherit;font-size:11px}
+    .review-pack-bulk-jira-actions{grid-column:1/-1;display:flex;align-items:center;gap:10px}
+    #reviewPackJiraResult{font-size:11px;color:#475467}
+    @media(max-width:700px){.review-pack-bulk-jira{grid-template-columns:1fr}}
+    html[data-jandostudio-theme="dark"] .review-pack-intro{background:#1b2b44;border-color:#385d8d;color:#dbeafe}
+    html[data-jandostudio-theme="dark"] .review-pack-field{color:#dce5f1}html[data-jandostudio-theme="dark"] .review-pack-field input,html[data-jandostudio-theme="dark"] .review-pack-field textarea,html[data-jandostudio-theme="dark"] .review-pack-page-actions input{background:#141c26;color:#e7edf6;border-color:#3b485b}
+    html[data-jandostudio-theme="dark"] .review-pack-pages,html[data-jandostudio-theme="dark"] .review-pack-page-row{background:#18222f;border-color:#3b485b}html[data-jandostudio-theme="dark"] .review-pack-page-head,html[data-jandostudio-theme="dark"] .review-pack-progress{background:#141c26;border-color:#3b485b;color:#dce5f1}
+    html[data-jandostudio-theme="dark"] .review-pack-section{border-color:#3b485b}
+    html[data-jandostudio-theme="dark"] .review-meta-wrap{border-color:#3b485b}
+    html[data-jandostudio-theme="dark"] .review-meta-table th,html[data-jandostudio-theme="dark"] .review-meta-table td{border-color:#2c3546}
+    html[data-jandostudio-theme="dark"] .review-meta-table thead th{background:#141c26}
+    html[data-jandostudio-theme="dark"] .review-meta-table input[type=text]{background:#141c26;color:#e7edf6;border-color:#3b485b}
+    html[data-jandostudio-theme="dark"] .review-pack-bulk-jira-paste textarea{background:#141c26;color:#e7edf6;border-color:#3b485b}
+    html[data-jandostudio-theme="dark"] #reviewPackJiraResult{color:#9aa7ba}
+    @media(max-width:700px){.review-pack-meta{grid-template-columns:1fr}.review-pack-description{grid-column:auto}.review-pack-page-head{flex-wrap:wrap}.review-pack-page-actions{width:100%;margin-left:0}.review-pack-page-actions input{width:100%;max-width:none}.review-pack-page-row{grid-template-columns:22px 1fr 70px}.review-pack-page-id{display:none}}
+  `;
+  document.head.appendChild(reviewPackStyle);
+
+  function reviewPackLoadDraft(){
+    try{
+      const draft=JSON.parse(localStorage.getItem(REVIEW_PACK_BUILDER_KEY)||'null');
+      if(draft?.metadata)reviewPackState.metadata={...reviewPackState.metadata,...draft.metadata};
+      if(Array.isArray(draft?.selected))reviewPackState.selected=new Set(draft.selected);
+    }catch(error){console.warn('Review pack draft unavailable',error);}
+  }
+  function reviewPackSaveDraft(){
+    try{localStorage.setItem(REVIEW_PACK_BUILDER_KEY,JSON.stringify({metadata:reviewPackState.metadata,selected:[...reviewPackState.selected]}));}catch(error){console.warn('Review pack draft could not be saved',error);}
+  }
+  function reviewPackPageList(){
+    v18CaptureCurrent();
+    return [...(state.pages||[])];
+  }
+  function reviewPackStable(value){
+    if(value===null||typeof value!=='object')return JSON.stringify(value===undefined?null:value);
+    if(Array.isArray(value))return`[${value.map(reviewPackStable).join(',')}]`;
+    return`{${Object.keys(value).filter(key=>typeof value[key]!=='function'&&value[key]!==undefined).sort().map(key=>`${JSON.stringify(key)}:${reviewPackStable(value[key])}`).join(',')}}`;
+  }
+  async function reviewPackFingerprint(source){
+    const input=new TextEncoder().encode(source);
+    if(globalThis.crypto?.subtle){
+      try{const digest=await crypto.subtle.digest('SHA-256',input);return[...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,'0')).join('');}catch(error){console.warn('SHA-256 unavailable; using local fallback.',error);}
+    }
+    throw new Error('SHA-256 requires HTTPS or localhost. Open the hosted site or local development server.');
+  }
+  function reviewPackSafeFilePart(value,fallback){
+    return String(value||fallback).replace(/[^a-z0-9_-]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,80)||fallback;
+  }
+  function reviewPackJsonForHtml(value){
+    return JSON.stringify(value).replace(/</g,'\\u003c').replace(/>/g,'\\u003e').replace(/&/g,'\\u0026').replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+  }
+  function reviewPackSafeSvg(markup){
+    const doc=new DOMParser().parseFromString(markup,'image/svg+xml');
+    if(doc.querySelector('parsererror'))throw new Error('A page could not be exported as SVG.');
+    doc.querySelectorAll('script,foreignObject,iframe,object,embed,audio,video,animate,set').forEach(node=>node.remove());
+    for(const node of doc.querySelectorAll('*'))for(const attr of [...node.attributes]){
+      if(/^on/i.test(attr.name))node.removeAttribute(attr.name);
+      if(/^(href|xlink:href|src)$/i.test(attr.name)&&!/^#/.test(attr.value)&&!/^data:image\/(png|jpeg|webp|gif);base64,/i.test(attr.value))throw new Error('A diagram contains an external or unsupported image/link. Embed it as PNG before exporting.');
+      if(/url\(\s*['"]?(?!#)/i.test(attr.value))throw new Error('A diagram references an external resource. Embed it before exporting.');
+    }
+    return new XMLSerializer().serializeToString(doc);
+  }
+  function reviewPackStandaloneHtml(pack){
+    const payload=reviewPackJsonForHtml(pack);
+    const closeScript='</scr'+'ipt>';
+    if(typeof jandoReviewRuntime!=='function')throw new Error('Review runtime could not load. Refresh the editor and try again.');
+    return`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(pack.packName)} · ${escapeHtml(pack.reviewRound)}</title>
+<style>
+:root{color-scheme:light;--bg:#eef1f5;--panel:#fff;--line:#d8dde6;--text:#1f2937;--muted:#667085;--accent:#246bfd}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);overflow:hidden}button{font:inherit;color:inherit}.rp-app{height:100%;display:grid;grid-template-rows:auto 1fr auto}.rp-header{display:flex;align-items:center;gap:14px;padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--line)}.rp-title{min-width:0}.rp-title h1{font-size:16px;margin:0 0 3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rp-title p{font-size:11px;color:var(--muted);margin:0}.rp-jira{margin-left:auto;padding:7px 12px;border:1px solid #b9d0f2;background:#f3f7ff;color:#2457c5;border-radius:4px;font-size:12px;font-weight:700;text-decoration:none;white-space:nowrap}.rp-jira:hover{background:#e2ecff}.rp-jira[hidden]{display:none}#rpSidebarToggle{flex:0 0 auto;padding:7px 12px;border:1px solid var(--line);background:var(--panel);border-radius:4px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap}#rpSidebarToggle:hover{background:#f5f8fd}#rpSidebarToggle[aria-expanded=true]{background:#eaf1ff;border-color:#9eb7ff;color:#1547aa}.rp-main{min-height:0;display:grid;grid-template-columns:minmax(0,1fr);gap:0}.rp-main.sidebar-open{grid-template-columns:340px minmax(0,1fr)}.rp-sidebar{display:none;min-height:0;overflow:auto;background:var(--panel);border-right:1px solid var(--line);padding:10px}.rp-main.sidebar-open .rp-sidebar{display:block}.rp-sidebar h2{font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin:0 0 8px}#pageSearch,#areaFilter{width:100%;padding:7px;margin-bottom:8px;border:1px solid var(--line);border-radius:4px;font:inherit}.rp-list{display:flex;flex-direction:column;gap:2px}.rp-list button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid transparent;background:transparent;border-radius:4px;padding:6px 8px;cursor:pointer;font-size:11px;line-height:1.3}.rp-list button:hover{background:#f5f8fd}.rp-list button.active{background:#eaf1ff;border-color:#9eb7ff}.rp-list .rp-row-index{flex:0 0 auto;min-width:16px;color:var(--muted);font-variant-numeric:tabular-nums}.rp-list .rp-row-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rp-list button.active .rp-row-name{color:#1547aa;font-weight:700}.rp-list .rp-row-jira{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:#246bfd}.rp-view{min-width:0;min-height:0;display:grid;grid-template-rows:auto 1fr;overflow:hidden}.rp-toolbar{display:flex;align-items:center;gap:6px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line)}.rp-toolbar button{min-width:32px;height:28px;border:1px solid var(--line);border-radius:4px;background:var(--panel);cursor:pointer}.rp-toolbar button:hover{background:#f5f8fd}.rp-toolbar .rp-counter{margin:0 8px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}.rp-toolbar .rp-spacer{flex:1}.rp-toolbar .rp-zoom{font-size:11px;color:var(--muted);min-width:52px}.rp-canvas{position:relative;min-height:0;overflow:auto;padding:24px;background:var(--bg)}.rp-slide{min-width:100%;min-height:100%;display:flex;align-items:center;justify-content:center}.rp-slide svg{display:block;max-width:none;background:transparent;transform-origin:center center}.rp-slide [data-link-page]{cursor:pointer}.rp-slide [data-link-page]:hover{opacity:.8}.rp-footer{display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--panel);border-top:1px solid var(--line);font-size:10px;color:var(--muted)}.rp-footer .rp-fingerprint{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}#rpTip{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#1f2937;color:#fff;padding:10px 14px;border-radius:8px;font-size:12px;display:flex;align-items:center;gap:12px;box-shadow:0 8px 24px rgba(16,24,40,.3);z-index:20;max-width:90vw}#rpTip[hidden]{display:none}#rpTip button{background:transparent;border:1px solid rgba(255,255,255,.4);color:#fff;border-radius:4px;padding:3px 8px;cursor:pointer;font:inherit}@media(max-width:760px){.rp-main.sidebar-open{grid-template-columns:220px minmax(0,1fr)}.rp-header{padding:10px;flex-wrap:wrap}.rp-footer{flex-wrap:wrap}.rp-canvas{padding:10px}}
+</style></head><body><div class="rp-app"><header class="rp-header"><button id="rpSidebarToggle" type="button" aria-expanded="false" title="Show or hide the page list">☰ Pages</button><div class="rp-title"><h1 id="rpTitle"></h1><p id="rpSubtitle"></p></div><a id="rpJira" class="rp-jira" target="_blank" rel="noopener" hidden>Review in Jira ↗</a></header><main class="rp-main"><aside class="rp-sidebar"><h2>Pages</h2><input id="pageSearch" type="search" placeholder="Search processes" aria-label="Search processes"><select id="areaFilter" aria-label="Filter by area"><option value="">All areas</option></select><div class="rp-list" id="rpList"></div></aside><section class="rp-view"><div class="rp-toolbar"><button id="rpPrev" type="button" title="Previous page">←</button><button id="rpNext" type="button" title="Next page">→</button><span class="rp-counter" id="rpCounter"></span><span class="rp-spacer"></span><button id="rpZoomOut" type="button" title="Zoom out">−</button><span class="rp-zoom" id="rpZoom"></span><button id="rpZoomIn" type="button" title="Zoom in">＋</button><button id="rpFit" type="button" title="Fill the available width">Fit width</button></div><div class="rp-canvas" id="rpCanvas"><div class="rp-slide" id="rpSlide"></div></div></section></main><footer class="rp-footer"><span id="rpPageMeta"></span><span class="rp-fingerprint" id="rpFingerprint"></span></footer></div><div id="rpTip" hidden><span>Tip: dashed boxes marked ↗ are linked — click to jump to that process.</span><button id="rpTipClose" type="button">Got it</button></div><script id="review-pack-data" type="application/json">${payload}${closeScript}<script>(${jandoReviewRuntime.toString()})();${closeScript}</body></html>`;
+  }
+  function reviewPackModal(){
+    let modal=$('reviewPackModal');
+    if(modal)return modal;
+    modal=document.createElement('div');modal.id='reviewPackModal';modal.className='modal-backdrop hidden';modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-labelledby','reviewPackTitle');
+    modal.innerHTML=`<div class="modal-card review-pack-modal"><div class="modal-head" id="reviewPackTitle"><div><strong>Create Process Pack</strong><small>Standalone, interactive process viewer</small></div><button type="button" data-review-pack-close aria-label="Close">×</button></div><div class="modal-body"><p class="review-pack-intro"><strong>What this is:</strong> a self-contained HTML file for browsing the selected processes — no JandoStudio needed. Cross-references ("-&gt; Operational Process: …") become clickable jumps between pages automatically. Review, comments and approval happen in Jira via the link you set per page below.</p><div class="review-pack-meta"><label class="review-pack-field">Pack ID<input id="reviewPackId" maxlength="80" autocomplete="off"></label><label class="review-pack-field">Pack name<input id="reviewPackName" maxlength="120" autocomplete="off"></label><label class="review-pack-field">Version / round<input id="reviewPackRound" maxlength="20" autocomplete="off"></label><label class="review-pack-field review-pack-description">Description (optional)<textarea id="reviewPackDescription" maxlength="500"></textarea></label></div><div class="review-pack-pages"><div class="review-pack-page-head"><strong>Pages</strong><span id="reviewPackCounts"></span><div class="review-pack-page-actions"><input id="reviewPackSearch" type="search" placeholder="Search pages" aria-label="Search pages"><button class="small-btn" id="reviewPackSelectAll" type="button">Select all</button><button class="small-btn" id="reviewPackClearAll" type="button">Clear all</button></div></div><div class="review-pack-page-list" id="reviewPackPageList"></div></div><details class="review-pack-section"><summary>Process metadata &amp; Jira links (optional)</summary><div class="review-pack-bulk-jira"><label class="review-pack-field">Jira base URL<input id="reviewPackJiraBase" placeholder="https://yourorg.atlassian.net/browse" autocomplete="off"></label><label class="review-pack-field review-pack-bulk-jira-paste">Paste Jira issues (one per line — key and title, in any order)<textarea id="reviewPackJiraPaste" rows="4" placeholder="LPF-96&#9;Review/Sign Off: LL Asset Lifecycle&#10;LPF-97&#9;Review/Sign Off: Billing"></textarea></label><div class="review-pack-bulk-jira-actions"><button class="small-btn primary" id="reviewPackJiraMatch" type="button">Match to pages</button><span id="reviewPackJiraResult"></span></div></div><div class="review-meta-wrap" id="reviewPackMetaTable"></div></details><p class="review-pack-footer-note">Each exported page includes its stable page ID, source snapshot, rendered SVG and a deterministic fingerprint for traceability. The generated HTML works locally in Chrome or Edge without JandoStudio or a hosted service.</p></div><div class="review-pack-progress" id="reviewPackProgress"><span id="reviewPackProgressText">Preparing export…</span><div class="review-pack-progress-bar"><i id="reviewPackProgressBar"></i></div></div><div class="modal-actions"><button class="small-btn" type="button" data-review-pack-close>Cancel</button><button class="small-btn primary" type="button" id="reviewPackGenerate">Generate standalone HTML</button></div></div>`;
+    document.body.appendChild(modal);
+    modal.querySelectorAll('[data-review-pack-close]').forEach(button=>button.onclick=()=>modal.classList.add('hidden'));
+    modal.addEventListener('pointerdown',event=>{if(event.target===modal)modal.classList.add('hidden');});
+    $('reviewPackSearch').addEventListener('input',event=>{reviewPackState.filter=event.target.value;reviewPackRenderPages();});
+    $('reviewPackSelectAll').onclick=()=>{reviewPackPageList().forEach(page=>reviewPackState.selected.add(page.id));reviewPackSaveDraft();reviewPackRenderPages();};
+    $('reviewPackJiraMatch').onclick=()=>reviewPackJiraPasteMatch();
+    $('reviewPackClearAll').onclick=()=>{reviewPackState.selected.clear();reviewPackSaveDraft();reviewPackRenderPages();};
+    $('reviewPackGenerate').onclick=()=>reviewPackGenerate().catch(error=>{console.error(error);reviewPackSetProgress(false);showToast(error.message||'The process pack could not be generated.',6500);});
+    return modal;
+  }
+  function reviewPageMetaRenderTable(){
+    const host=$('reviewPackMetaTable');if(!host)return;
+    const pages=reviewPackPageList().filter(page=>reviewPackState.selected.has(page.id));
+    host.replaceChildren();
+    if(!pages.length){const empty=document.createElement('p');empty.className='review-meta-empty';empty.textContent='Select pages above to edit their metadata.';host.appendChild(empty);return;}
+    const table=document.createElement('table');table.className='review-meta-table';
+    const head=document.createElement('tr');['Page','Process ID','Area','Jira link'].forEach(text=>{const th=document.createElement('th');th.textContent=text;head.appendChild(th);});
+    const thead=document.createElement('thead');thead.appendChild(head);table.appendChild(thead);
+    const tbody=document.createElement('tbody');
+    pages.forEach(page=>{
+      const meta=reviewPageMetaResolved(page),row=document.createElement('tr');
+      const nameCell=document.createElement('td');nameCell.className='review-meta-name';nameCell.textContent=page.name||page.id;nameCell.title=page.name||page.id;row.appendChild(nameCell);
+      [['processId',meta.processId],['area',meta.area]].forEach(([field,value])=>{
+        const cell=document.createElement('td'),input=document.createElement('input');input.type='text';input.value=value;
+        input.onchange=()=>{reviewPageMetaPatch(page.id,{[field]:input.value.trim()});};
+        cell.appendChild(input);row.appendChild(cell);
+      });
+      const jiraCell=document.createElement('td'),jiraInput=document.createElement('input');jiraInput.type='text';jiraInput.placeholder='https://…atlassian.net/browse/LIQ-123';jiraInput.value=meta.jiraLink;
+      jiraInput.onchange=()=>{
+        const value=jiraInput.value.trim();
+        if(value&&!/^https?:\/\//i.test(value)){showToast('Jira link should start with http:// or https://');jiraInput.focus();return;}
+        reviewPageMetaPatch(page.id,{jiraLink:value});
+      };
+      jiraCell.appendChild(jiraInput);row.appendChild(jiraCell);
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);host.appendChild(table);
+  }
+  function reviewPackRenderPages(){
+    const pages=reviewPackPageList(),host=$('reviewPackPageList');if(!host)return;
+    const term=(reviewPackState.filter||'').trim().toLowerCase();const visible=pages.map((page,index)=>({page,index})).filter(({page})=>!term||`${page.name||''} ${page.id||''}`.toLowerCase().includes(term));
+    host.replaceChildren();
+    if(!visible.length){const empty=document.createElement('div');empty.className='review-pack-empty';empty.textContent=pages.length?'No pages match that search.':'Load a multi-page draw.io/XML document to begin.';host.appendChild(empty);}
+    visible.forEach(({page,index})=>{const row=document.createElement('label');row.className='review-pack-page-row';const check=document.createElement('input');check.type='checkbox';check.checked=reviewPackState.selected.has(page.id);check.addEventListener('change',()=>{if(check.checked)reviewPackState.selected.add(page.id);else reviewPackState.selected.delete(page.id);reviewPackSaveDraft();reviewPackUpdateCounts(pages.length);reviewPageMetaRenderTable();});const number=document.createElement('span');number.className='review-pack-page-number';number.textContent=`Page ${index+1}`;const id=document.createElement('span');id.className='review-pack-page-id';id.title=page.id;id.textContent=page.id;const name=document.createElement('span');name.className='review-pack-page-name';const fullName=page.name||`Page-${index+1}`;name.title=fullName;name.textContent=fullName;row.append(check,number,id,name);host.appendChild(row);});
+    reviewPackUpdateCounts(pages.length);
+    reviewPageMetaRenderTable();
+  }
+  function reviewPackUpdateCounts(total){const el=$('reviewPackCounts');if(el)el.textContent=`${total} page${total===1?'':'s'} detected · ${reviewPackState.selected.size} selected`;$('reviewPackGenerate')?.toggleAttribute('disabled',reviewPackState.selected.size===0);}
+  function reviewPackSetProgress(show,text='',fraction=0){const box=$('reviewPackProgress');if(!box)return;box.classList.toggle('show',show);if(text)$('reviewPackProgressText').textContent=text;$('reviewPackProgressBar').style.width=`${Math.round(fraction*100)}%`;}
+  function reviewPackOpen(){
+    reviewPackLoadDraft();const pages=reviewPackPageList();if(!pages.length){showToast('Load a draw.io/XML document before creating a process pack.');return;}
+    const validIds=new Set(pages.map(page=>page.id));reviewPackState.selected=new Set([...reviewPackState.selected].filter(id=>validIds.has(id)));
+    if(!reviewPackState.selected.size)pages.forEach(page=>reviewPackState.selected.add(page.id));
+    const modal=reviewPackModal();$('reviewPackId').value=reviewPackState.metadata.packId;$('reviewPackName').value=reviewPackState.metadata.packName;$('reviewPackRound').value=reviewPackState.metadata.reviewRound;$('reviewPackDescription').value=reviewPackState.metadata.description;$('reviewPackJiraBase').value=reviewPackState.metadata.jiraBaseUrl||'';$('reviewPackSearch').value=reviewPackState.filter;reviewPackRenderPages();modal.classList.remove('hidden');setTimeout(()=>$('reviewPackId').focus(),0);
+  }
+  function reviewPackReadMetadata(){
+    reviewPackState.metadata={...reviewPackState.metadata,packId:($('reviewPackId').value.trim()||'PROCESS-PACK').slice(0,80),packName:($('reviewPackName').value.trim()||'Process Pack').slice(0,120),reviewRound:($('reviewPackRound').value.trim()||'R1').slice(0,20),description:$('reviewPackDescription').value.trim().slice(0,500)};
+    reviewPackSaveDraft();
+  }
+  function reviewPackJiraPasteMatch(){
+    const base=$('reviewPackJiraBase').value.trim().replace(/\/+$/,'');
+    if(!base)return showToast('Add a Jira base URL first, e.g. https://yourorg.atlassian.net/browse');
+    if(!/^https?:\/\//i.test(base))return showToast('Jira base URL should start with http:// or https://');
+    reviewPackState.metadata.jiraBaseUrl=base;reviewPackSaveDraft();
+    const lines=$('reviewPackJiraPaste').value.split('\n').map(line=>line.trim()).filter(Boolean);
+    if(!lines.length)return showToast('Paste one Jira issue per line first.');
+    const pages=reviewPackPageList().filter(page=>reviewPackState.selected.has(page.id));
+    let matched=0;const unmatched=[];
+    lines.forEach(line=>{
+      const keyMatch=/([A-Z][A-Z0-9]*-\d+)/.exec(line);
+      if(!keyMatch){unmatched.push(line);return;}
+      const key=keyMatch[1];
+      let title=(line.slice(keyMatch.index+key.length).split('\t').find(part=>part.trim())||'');
+      title=title.replace(/^[\s:.\-]+/,'').replace(/^Review\s*\/?\s*Sign[\s-]*Off:?\s*/i,'').trim();
+      if(!title){unmatched.push(key);return;}
+      let best=null,bestScore=0;
+      pages.forEach(page=>{
+        const score=reviewMatchScore(title,reviewStripTitlePrefix(page.name));
+        if(score>bestScore){bestScore=score;best=page;}
+      });
+      if(best&&bestScore>=0.5){reviewPageMetaPatch(best.id,{jiraLink:`${base}/${key}`});matched++;}
+      else unmatched.push(`${key} ${title}`);
+    });
+    reviewPageMetaRenderTable();
+    $('reviewPackJiraResult').textContent=`Linked ${matched} of ${lines.length}${unmatched.length?` · unmatched: ${unmatched.slice(0,5).join(', ')}${unmatched.length>5?'…':''}`:''}`;
+    showToast(`Matched ${matched} of ${lines.length} Jira issue${lines.length===1?'':'s'} to pages.`,4500);
+  }
+  const REVIEW_CROSS_REF_SHAPES=new Set(['external','subprocess','predefined']);
+  function reviewPackCrossLinks(currentPage,exportPages){
+    const candidates=(state.cells||[]).filter(cell=>REVIEW_CROSS_REF_SHAPES.has(cell.shape)&&/^-+>/.test(String(cell.label||'').trim()));
+    const linkMap={},linkIcons=[];let unresolved=0;
+    candidates.forEach(cell=>{
+      const cleaned=reviewCleanCrossRefLabel(cell.label);
+      if(!cleaned)return;
+      let best=null,bestScore=0;
+      exportPages.forEach(page=>{
+        if(page.id===currentPage.id)return;
+        const score=reviewMatchScore(cleaned,reviewStripTitlePrefix(page.name));
+        if(score>bestScore){bestScore=score;best=page;}
+      });
+      if(best&&bestScore>=0.4){linkMap[cell.id]=best.id;linkIcons.push({x:cell.x,y:cell.y,w:cell.w,h:cell.h});}
+      else unresolved++;
+    });
+    return{linkMap,linkIcons,unresolved,total:candidates.length};
+  }
+  async function reviewPackGenerate(){
+    reviewPackReadMetadata();const pages=reviewPackPageList().filter(page=>reviewPackState.selected.has(page.id));if(!pages.length)return showToast('Select at least one page.');
+    reviewPackSetProgress(true,'Preparing standalone pages…',0);$('reviewPackGenerate').disabled=true;
+    const originalPageId=state.currentPageId,entries=[],editorHistory={undo:state.undo,redo:state.redo,selected:new Set(state.selected)};
+    let unresolvedTotal=0,linkedTotal=0;
+    try{
+      for(let index=0;index<pages.length;index++){
+        const page=pages[index];await v18LoadPage(page.id);await new Promise(resolve=>setTimeout(resolve,0));
+        const canonicalSource=reviewPackStable({page:state.page,cells:state.cells,paintData:state.paintData,layers:state.layers,unsupported:page.unsupported||[]});
+        const cross=reviewPackCrossLinks(page,pages);
+        unresolvedTotal+=cross.unresolved;linkedTotal+=Object.keys(cross.linkMap).length;
+        const renderedSvg=reviewPackSafeSvg(exportSvgMarkup({x:0,y:0,w:Number(state.page.width||DEFAULT_PAGE.width),h:Number(state.page.height||DEFAULT_PAGE.height)},{transparent:true,linkMap:cross.linkMap,linkIcons:cross.linkIcons}));
+        const pageMeta=reviewPageMetaResolved(page);
+        entries.push({pageId:page.id,pageName:page.name||`Page-${index+1}`,pageIndex:state.pages.indexOf(page),renderedSvg,diagramFingerprint:await reviewPackFingerprint(canonicalSource),fingerprintAlgorithm:'SHA-256',fingerprintFormat:'jandostudio-page-state-v1',processId:pageMeta.processId,area:pageMeta.area,jiraLink:pageMeta.jiraLink});
+        reviewPackSetProgress(true,`Rendering page ${index+1} of ${pages.length}…`,(index+1)/pages.length);
+      }
+    }finally{
+      if(originalPageId)await v18LoadPage(originalPageId);
+      Object.assign(state,editorHistory);render();
+      $('reviewPackGenerate').disabled=false;
+    }
+    const pack={schemaVersion:'1.0',packType:'jandostudio-process-pack',packId:reviewPackState.metadata.packId,packName:reviewPackState.metadata.packName,reviewRound:reviewPackState.metadata.reviewRound,generatedAt:nowIso(),description:reviewPackState.metadata.description,pages:entries};
+    const filename=`${reviewPackSafeFilePart(pack.packId,'PROCESS-PACK')}_${reviewPackSafeFilePart(pack.reviewRound,'R1')}.html`;const html=reviewPackStandaloneHtml(pack);const blob=new Blob([html],{type:'text/html;charset=utf-8'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1800000);reviewPackSetProgress(false);
+    let preview=$('reviewPackPreview');if(!preview){preview=document.createElement('a');preview.id='reviewPackPreview';preview.className='small-btn';preview.target='_blank';preview.rel='noopener';preview.textContent='Preview generated pack';$('reviewPackGenerate').before(preview);}preview.href=url;
+    const linkNote=linkedTotal||unresolvedTotal?` · ${linkedTotal} cross-reference${linkedTotal===1?'':'s'} linked${unresolvedTotal?`, ${unresolvedTotal} unmatched`:''}`:'';
+    showToast(`Generated ${filename}${linkNote}`,5000);
+    return{filename,pack};
+  }
+  function reviewPackInstallButton(){
+    if($('reviewPackBtn'))return;const anchor=document.querySelector('.capture-wrap');if(!anchor)return;const button=document.createElement('button');button.id='reviewPackBtn';button.className='toolbar-btn';button.type='button';button.title='Create a standalone, interactive process pack';button.textContent='Process pack';button.onclick=reviewPackOpen;anchor.before(button);
+  }
+  reviewPackInstallButton();
+  window.JandoStudio.reviewPack={open:reviewPackOpen,generate:reviewPackGenerate,version:'2.0'};
 
   /* Everything held back during boot, run once now that there is something worth looking at. */
   jandoBooting = false;
