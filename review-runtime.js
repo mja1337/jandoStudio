@@ -16,7 +16,7 @@ function jandoReviewRuntime() {
   const hasCrossLinks = crossLinkedPageIds.size > 0;
 
   $('rpTitle').textContent = pack.packName;
-  $('rpSubtitle').textContent = 'Round ' + pack.reviewRound + ' · ' + pack.pages.length + ' processes';
+  $('rpSubtitle').textContent = pack.pages.length + ' process' + (pack.pages.length === 1 ? '' : 'es');
 
   const areas = [...new Set(pack.pages.map(p => p.area).filter(Boolean))].sort();
   areas.forEach(a => { const o = document.createElement('option'); o.value = a; o.textContent = a; $('areaFilter').appendChild(o); });
