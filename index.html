@@ -21081,6 +21081,7 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     .review-pack-jira-result{grid-column:1/-1}
     .review-pack-jira-suggestions{margin-top:8px;border:1px solid #f0d999;background:#fffaf0;border-radius:5px;padding:8px 10px}
     .review-pack-jira-suggestions-heading{font-size:11px;font-weight:700;color:#8a5a00;margin-bottom:6px}
+    .review-pack-override-row{display:flex;gap:6px;margin:4px 0}.review-pack-override-row input{flex:1;min-width:0}.review-pack-override-row select{flex:1;min-width:0}
     .review-pack-unmatched{margin:8px 0;max-height:160px;overflow:auto}.review-pack-unmatched-list{margin:0;padding-left:18px;font-size:12px}.review-pack-unmatched-list li{margin:2px 0}
     .review-pack-jira-suggestion-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;font-size:11px;border-top:1px solid #f4e4bb}
     .review-pack-jira-suggestion-row:first-of-type{border-top:none}
@@ -21226,7 +21227,7 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     reviewPackLoadDraft();const pages=reviewPackPageList();if(!pages.length){showToast('Load a draw.io/XML document before creating a process pack.');return;}
     const validIds=new Set(pages.map(page=>page.id));reviewPackState.selected=new Set([...reviewPackState.selected].filter(id=>validIds.has(id)));
     if(!reviewPackState.selected.size)pages.forEach(page=>reviewPackState.selected.add(page.id));
-    const modal=reviewPackModal();$('reviewPackId').value=reviewPackState.metadata.packId;$('reviewPackName').value=reviewPackState.metadata.packName;$('reviewPackRound').value=reviewPackState.metadata.reviewRound;$('reviewPackDescription').value=reviewPackState.metadata.description;$('reviewPackJiraBase').value=reviewPackState.metadata.jiraBaseUrl||'';$('reviewPackSearch').value=reviewPackState.filter;reviewPackRenderPages();modal.classList.remove('hidden');setTimeout(()=>$('reviewPackId').focus(),0);
+    const modal=reviewPackModal();$('reviewPackId').value=reviewPackState.metadata.packId;$('reviewPackName').value=reviewPackState.metadata.packName;$('reviewPackRound').value=reviewPackState.metadata.reviewRound;$('reviewPackDescription').value=reviewPackState.metadata.description;$('reviewPackJiraBase').value=reviewPackState.metadata.jiraBaseUrl||'';$('reviewPackSearch').value=reviewPackState.filter;reviewPackRenderPages();reviewCrossRefOverridesInstall();if($('reviewPackOverrides')?.open)reviewCrossRefOverridesRender();modal.classList.remove('hidden');setTimeout(()=>$('reviewPackId').focus(),0);
   }
   function reviewPackReadMetadata(){
     reviewPackState.metadata={...reviewPackState.metadata,packId:($('reviewPackId').value.trim()||'PROCESS-PACK').slice(0,80),packName:($('reviewPackName').value.trim()||'Process Pack').slice(0,120),reviewRound:($('reviewPackRound').value.trim()||'R1').slice(0,20),description:$('reviewPackDescription').value.trim().slice(0,500)};
@@ -21322,17 +21323,61 @@ const V21_ALPHA52_NETSUITE_TAGS=[
   }
   const REVIEW_CROSS_REF_SHAPES=new Set(['external','subprocess','predefined']);
   /* A handful of cross-reference labels don't fuzzy-match any page name or swimlane title at all —
-     either the referenced process has no page of its own ("Wave & Fulfil(l)ment" is handled inside
-     the WMS page) or the label names a lifecycle event rather than a process ("Asset Record Created",
-     "Quote Conversion"). Not a matching-algorithm gap, so hard-coded per business sign-off rather than
-     tuned into the scorer. Keyed by the normalized cleaned label text; value is the target page's name
-     with the "Operational Process - " prefix stripped, same form reviewStripTitlePrefix produces. */
-  const REVIEW_CROSS_REF_OVERRIDES={
+     either the referenced process has no page of its own, or the label names a lifecycle event rather
+     than a process. These label -> page mappings are pack data, not code: they live per pack ID in
+     localStorage and are edited in the "Cross-reference overrides" section of the Process Pack dialog.
+     Keyed by the normalized cleaned label text; value is the target page's name with the
+     "Operational Process - " prefix stripped, same form reviewStripTitlePrefix produces.
+     REVIEW_CROSS_REF_LEGACY_OVERRIDES only seeds a pack once (migration from the old hard-coded list),
+     and only with entries whose target page actually exists in the document. */
+  const REVIEW_CROSS_REF_OVERRIDES_KEY='jandostudio.reviewCrossRefOverrides.v1';
+  const REVIEW_CROSS_REF_LEGACY_OVERRIDES={
     'quote conversion':'Pre-sales & Quote from IQ',
     'asset record created':'LL Asset Lifecycle',
     'wave fulfilment':'WMS',
     'wave fulfillment':'WMS',
   };
+  function reviewCrossRefOverridesLoadAll(){try{return JSON.parse(localStorage.getItem(REVIEW_CROSS_REF_OVERRIDES_KEY)||'{}')||{};}catch(error){console.warn('Cross-reference overrides unavailable',error);return{};}}
+  function reviewCrossRefOverridesSaveAll(all){try{localStorage.setItem(REVIEW_CROSS_REF_OVERRIDES_KEY,JSON.stringify(all));}catch(error){console.warn('Cross-reference overrides could not be saved',error);}}
+  function reviewCrossRefOverridesFor(packId,pages=reviewPackPageList()){
+    const all=reviewCrossRefOverridesLoadAll(),key=String(packId||'PROCESS-PACK');
+    if(!all[key]){
+      const names=new Set((pages||[]).map(page=>reviewStripTitlePrefix(page.name)));
+      all[key]=Object.fromEntries(Object.entries(REVIEW_CROSS_REF_LEGACY_OVERRIDES).filter(([,target])=>names.has(target)));
+      reviewCrossRefOverridesSaveAll(all);
+    }
+    return{...all[key]};
+  }
+  function reviewCrossRefOverridesSet(packId,map){
+    const all=reviewCrossRefOverridesLoadAll(),clean={};
+    Object.entries(map||{}).forEach(([label,target])=>{const k=reviewNormalizeForMatch(reviewCleanCrossRefLabel(label));const v=String(target||'').trim();if(k&&v)clean[k]=v;});
+    all[String(packId||'PROCESS-PACK')]=clean;reviewCrossRefOverridesSaveAll(all);return clean;
+  }
+  function reviewCrossRefOverridesRender(){
+    const host=$('reviewPackOverrideRows');if(!host)return;host.replaceChildren();
+    const packId=reviewPackState.metadata.packId,map=reviewCrossRefOverridesFor(packId),pages=reviewPackPageList();
+    const save=()=>{const next={};host.querySelectorAll('.review-pack-override-row').forEach(row=>{const label=row.querySelector('input').value,target=row.querySelector('select').value;if(label.trim()&&target)next[label]=target;});reviewCrossRefOverridesSet(packId,next);};
+    const addRow=(label='',target='')=>{
+      const row=document.createElement('div');row.className='review-pack-override-row';
+      const input=document.createElement('input');input.placeholder='Cross-reference label, e.g. Quote Conversion';input.value=label;input.setAttribute('aria-label','Cross-reference label');input.onchange=save;
+      const select=document.createElement('select');select.setAttribute('aria-label','Target page');
+      const blank=document.createElement('option');blank.value='';blank.textContent='Choose page…';select.appendChild(blank);
+      const names=[...new Set(pages.map(page=>reviewStripTitlePrefix(page.name)))];if(target&&!names.includes(target))names.push(target);
+      names.forEach(name=>{const option=document.createElement('option');option.value=name;option.textContent=name;select.appendChild(option);});
+      select.value=target;select.onchange=save;
+      const remove=document.createElement('button');remove.type='button';remove.className='small-btn';remove.textContent='Remove';remove.onclick=()=>{row.remove();save();};
+      row.append(input,select,remove);host.appendChild(row);return row;
+    };
+    Object.entries(map).forEach(([label,target])=>addRow(label,target));
+    $('reviewPackOverrideAdd').onclick=()=>addRow().querySelector('input').focus();
+  }
+  function reviewCrossRefOverridesInstall(){
+    if($('reviewPackOverrides'))return;
+    const body=$('reviewPackGenerate')?.closest('.modal-card')?.querySelector('.modal-body');if(!body)return;
+    const details=document.createElement('details');details.id='reviewPackOverrides';details.className='review-pack-section';
+    details.innerHTML='<summary>Cross-reference overrides (optional)</summary><p class="review-pack-footer-note">Point a cross-reference label that doesn\'t match any page name at the page it should open. Saved for this pack ID.</p><div id="reviewPackOverrideRows"></div><button class="small-btn" id="reviewPackOverrideAdd" type="button">Add mapping</button>';
+    body.appendChild(details);details.addEventListener('toggle',()=>{if(details.open)reviewCrossRefOverridesRender();});
+  }
   /* A cross-reference shape's text is usually written against whatever the target page's own swimlane
      heading says ("Contract Creation"), which is often not the same string as that page's tab/list name
      ("Contract & Subscription (ZAB)") — the two get renamed independently over time. Matching against
@@ -21347,14 +21392,14 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     if(originalPageId)await v18LoadPage(originalPageId);
     return titles;
   }
-  function reviewPackCrossLinks(currentPage,exportPages,swimlaneTitles){
+  function reviewPackCrossLinks(currentPage,exportPages,swimlaneTitles,overrides=reviewCrossRefOverridesFor(reviewPackState.metadata.packId)){
     const candidates=(state.cells||[]).filter(cell=>REVIEW_CROSS_REF_SHAPES.has(cell.shape)&&/^-+>/.test(String(cell.label||'').trim()));
     const linkMap={},linkIcons=[],unmatched=[];let unresolved=0;
     candidates.forEach(cell=>{
       const cleaned=reviewCleanCrossRefLabel(cell.label);
       if(!cleaned)return;
       let best=null,bestScore=0;
-      const overrideName=REVIEW_CROSS_REF_OVERRIDES[reviewNormalizeForMatch(cleaned)];
+      const overrideName=overrides[reviewNormalizeForMatch(cleaned)];
       if(overrideName){
         best=exportPages.find(page=>page.id!==currentPage.id&&reviewStripTitlePrefix(page.name)===overrideName)||null;
         bestScore=best?1:0;
@@ -21376,11 +21421,11 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     const originalPageId=state.currentPageId,entries=[],editorHistory={undo:state.undo,redo:state.redo,selected:new Set(state.selected)};
     let unresolvedTotal=0,linkedTotal=0;const unmatchedAll=[];
     try{
-      const swimlaneTitles=await reviewPackSwimlaneTitles(pages);
+      const swimlaneTitles=await reviewPackSwimlaneTitles(pages),crossRefOverrides=reviewCrossRefOverridesFor(reviewPackState.metadata.packId);
       for(let index=0;index<pages.length;index++){
         const page=pages[index];await v18LoadPage(page.id);await new Promise(resolve=>setTimeout(resolve,0));
         const canonicalSource=reviewPackStable({page:state.page,cells:state.cells,paintData:state.paintData,layers:state.layers,unsupported:page.unsupported||[]});
-        const cross=reviewPackCrossLinks(page,pages,swimlaneTitles);
+        const cross=reviewPackCrossLinks(page,pages,swimlaneTitles,crossRefOverrides);
         unresolvedTotal+=cross.unresolved;linkedTotal+=Object.keys(cross.linkMap).length;unmatchedAll.push(...cross.unmatched);
         const renderedSvg=reviewPackSafeSvg(exportSvgMarkup({x:0,y:0,w:Number(state.page.width||DEFAULT_PAGE.width),h:Number(state.page.height||DEFAULT_PAGE.height)},{transparent:true,linkMap:cross.linkMap,linkIcons:cross.linkIcons}));
         const pageMeta=reviewPageMetaResolved(page);
@@ -21481,7 +21526,7 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     if($('reviewPackBtn'))return;const anchor=document.querySelector('.capture-wrap');if(!anchor)return;const button=document.createElement('button');button.id='reviewPackBtn';button.className='toolbar-btn';button.type='button';button.title='Create a standalone, interactive process pack';button.textContent='Process pack';button.onclick=reviewPackOpen;anchor.before(button);
   }
   reviewPackInstallButton();
-  window.JandoStudio.reviewPack={open:reviewPackOpen,generate:reviewPackGenerate,crossLinks:reviewPackCrossLinks,jumpToCell:reviewPackJumpToCell,version:'2.0'};
+  window.JandoStudio.reviewPack={open:reviewPackOpen,generate:reviewPackGenerate,crossLinks:reviewPackCrossLinks,jumpToCell:reviewPackJumpToCell,overrides:{get:packId=>reviewCrossRefOverridesFor(packId??reviewPackState.metadata.packId),set:(map,packId)=>reviewCrossRefOverridesSet(packId??reviewPackState.metadata.packId,map)},version:'2.0'};
 
   /* Everything held back during boot, run once now that there is something worth looking at. */
   jandoBooting = false;
