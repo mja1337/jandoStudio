@@ -2729,7 +2729,61 @@
     }
 
     points.push(end);
-    return simplifyOrthogonalPoints(points);
+    const routed = simplifyOrthogonalPoints(points);
+    const leavesOk = (route) => { const a = route[0], b = route[1]; return !b || (b.x - a.x) * sourceDirection.x + (b.y - a.y) * sourceDirection.y >= -0.01; };
+    const arrivesOk = (route) => { const a = route[route.length - 2], b = route[route.length - 1]; return !a || (a.x - b.x) * targetDirection.x + (a.y - b.y) * targetDirection.y >= -0.01; };
+    /* Check the raw points as well: simplifyOrthogonalPoints merges a stub and a dog-leg that run in
+       opposite directions into one segment, which hides the fold-back (it then heads into the shape). */
+    if (!routeDirectionIssues(dedupeRoutePoints(points)).length && !routeDirectionIssues(routed).length && leavesOk(routed) && arrivesOk(routed)) return routed;
+    /* The fixed stub plus midpoint dog-leg can point away from the target and fold back over itself
+       (typically from a diamond's top/bottom vertex to a shape up and to the side). Fall back to the
+       simplest route that neither reverses nor crosses itself and never heads back into either shape:
+       an L-route first (preferred when the target sits in the stub's quadrant), then stub-less Z-routes. */
+    const midX = (start.x + end.x) / 2, midY = (start.y + end.y) / 2;
+    const candidates = [
+      sourceHorizontal ? [start, { x: end.x, y: start.y }, end] : [start, { x: start.x, y: end.y }, end],
+      sourceHorizontal ? [start, { x: start.x, y: end.y }, end] : [start, { x: end.x, y: start.y }, end],
+      [start, sourceStub, sourceHorizontal ? { x: sourceStub.x, y: end.y } : { x: end.x, y: sourceStub.y }, end],
+      [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end],
+      [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end]
+    ].map(simplifyOrthogonalPoints);
+    return candidates.find((route) => leavesOk(route) && arrivesOk(route) && !routeDirectionIssues(route).length)
+      || candidates.find((route) => !routeDirectionIssues(route).length)
+      || routed;
+  }
+
+  /* Returns ['reversal'] when a segment runs straight back along the previous one, and/or
+     ['self-intersection'] when two non-adjacent segments cross or overlap. Used by the router and QA. */
+  function routeDirectionIssues(points) {
+    const clean = dedupeRoutePoints(points || []);
+    const segments = [];
+    for (let index = 0; index < clean.length - 1; index += 1) {
+      const a = clean[index], b = clean[index + 1];
+      const dx = Math.abs(b.x - a.x) < 0.5 ? 0 : Math.sign(b.x - a.x), dy = Math.abs(b.y - a.y) < 0.5 ? 0 : Math.sign(b.y - a.y);
+      if (dx || dy) segments.push({ a, b, dx, dy });
+    }
+    const issues = new Set();
+    for (let index = 1; index < segments.length; index += 1) {
+      const previous = segments[index - 1], current = segments[index];
+      if (current.dx === -previous.dx && current.dy === -previous.dy) issues.add('reversal');
+    }
+    const range = (u, v) => [Math.min(u, v), Math.max(u, v)];
+    const overlaps = (s1, s2) => {
+      const h1 = s1.dy === 0 && s1.dx !== 0, h2 = s2.dy === 0 && s2.dx !== 0;
+      const v1 = s1.dx === 0, v2 = s2.dx === 0;
+      if ((h1 && h2) || (v1 && v2)) {
+        const axis = h1 ? 'y' : 'x', along = h1 ? 'x' : 'y';
+        if (Math.abs(s1.a[axis] - s2.a[axis]) > 0.5) return false;
+        const [a1, a2] = range(s1.a[along], s1.b[along]), [b1, b2] = range(s2.a[along], s2.b[along]);
+        return Math.min(a2, b2) - Math.max(a1, b1) > 1;
+      }
+      if (!(h1 || v1) || !(h2 || v2)) return false;
+      const H = h1 ? s1 : s2, V = h1 ? s2 : s1;
+      const [x1, x2] = range(H.a.x, H.b.x), [y1, y2] = range(V.a.y, V.b.y);
+      return V.a.x > x1 + 0.5 && V.a.x < x2 - 0.5 && H.a.y > y1 + 0.5 && H.a.y < y2 - 0.5;
+    };
+    for (let i = 0; i < segments.length; i += 1) for (let j = i + 2; j < segments.length; j += 1) if (overlaps(segments[i], segments[j])) issues.add('self-intersection');
+    return [...issues];
   }
 
   function defaultRoutePoints(start, end, route = 'orthogonal', sourcePort = 'auto', targetPort = 'auto') {
@@ -7962,6 +8016,7 @@
     matchSize: matchSelectionSize,
     ensureEdgeDefaults,
     routePoints: (edgeId) => deepClone(routePoints(getCell(edgeId))),
+    routingQa: { orthogonal: (start, end, sourcePort = 'auto', targetPort = 'auto') => deepClone(orthogonalRoutePoints(start, end, sourcePort, targetPort)), directionIssues: (points) => routeDirectionIssues(points) },
     addWaypoint: (edgeId, point) => insertEdgeWaypoint(getCell(edgeId), point),
     quickCreate: (sourceId, direction) => {
       const source = getCell(sourceId);
