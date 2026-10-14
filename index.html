@@ -21480,6 +21480,32 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     updateViewBox();render();updateUi();
     return{pageId:state.currentPageId,selected:[...state.selected]};
   }
+  /* ================= Absorb small end jogs next to a shape ================= */
+  /* A waypoint saved against slightly different geometry (e.g. a 140-wide diamond, then 150 wide: the
+     top vertex moves 5px but the waypoint stays at the old centre) leaves a tiny sideways step at the
+     port that reads as the line doubling back. Only the drawn route is straightened; stored waypoints
+     are untouched. Steps up to ROUTE_JOG_TOLERANCE px are absorbed. */
+  const ROUTE_JOG_TOLERANCE=8;
+  function routeAbsorbEndJogs(points){
+    const pts=dedupeRoutePoints(points||[]);if(pts.length<3)return pts;
+    const fix=(a,b,c)=>{/* a = fixed end, b-c the next two points */
+      const len=Math.hypot(b.x-a.x,b.y-a.y);if(len<0.5||len>ROUTE_JOG_TOLERANCE)return false;
+      const firstHorizontal=Math.abs(b.y-a.y)<0.5,nextVertical=Math.abs(c.x-b.x)<0.5,firstVertical=Math.abs(b.x-a.x)<0.5,nextHorizontal=Math.abs(c.y-b.y)<0.5;
+      if(firstHorizontal&&nextVertical){b.x=a.x;c.x=a.x;return true;}
+      if(firstVertical&&nextHorizontal){b.y=a.y;c.y=a.y;return true;}
+      return false;
+    };
+    const n=pts.length,startFixed=n>=4&&fix(pts[0],pts[1],pts[2]);
+    const endFixed=(n>=5||(n===4&&!startFixed))&&fix(pts[n-1],pts[n-2],pts[n-3]);
+    return startFixed||endFixed?simplifyOrthogonalPoints(pts):points;
+  }
+  const routeJogBaseRoutePoints=routePoints;
+  routePoints=function(edge,overrides={}){
+    const points=routeJogBaseRoutePoints(edge,overrides);
+    if(!edge||edge.route==='straight'||!Array.isArray(points)||points.length<4)return points;
+    return routeAbsorbEndJogs(points);
+  };
+
   /* ================= Layout QA: connector self-loops and rendered-vs-declared geometry ================= */
   /* The box-overlap/fill QA suites never looked at a connector folding back over itself, or at a shape
      that draws bigger than its declared geometry; both were only ever found by eye. */
@@ -21494,7 +21520,12 @@ const V21_ALPHA52_NETSUITE_TAGS=[
   }
   function layoutQaConnectorIssues(edge){
     const points=dedupeRoutePoints(routePoints(edge)||[]);if(points.length<2)return[];
-    const issues=routeDirectionIssues(points).map(kind=>kind==='reversal'?'route-reversal':'route-self-intersection');
+    const raw=dedupeRoutePoints(routeJogBaseRoutePoints(edge)||[]);
+    const issues=[...new Set([...routeDirectionIssues(points),...routeDirectionIssues(raw)])].map(kind=>kind==='reversal'?'route-reversal':'route-self-intersection');
+    const jog=(a,b,c)=>{if(!c)return false;const len=Math.hypot(b.x-a.x,b.y-a.y);const turn=Math.abs((b.x-a.x)*(c.y-b.y)-(b.y-a.y)*(c.x-b.x))>0.01;return len>0.5&&len<=ROUTE_JOG_TOLERANCE&&turn;};
+    /* Checked on the route before routeAbsorbEndJogs straightens it, so the underlying file problem
+       (a waypoint a few px off the port) is still reported. */
+    if(raw.length>=4&&(jog(raw[0],raw[1],raw[2])||jog(raw[raw.length-1],raw[raw.length-2],raw[raw.length-3])))issues.push('route-end-jog');
     [getCell(edge.source),getCell(edge.target)].filter(cell=>isVertex(cell)&&cell.shape!=='swimlane').forEach(cell=>{
       for(let index=0;index<points.length-1;index++){
         const a=points[index],b=points[index+1];
