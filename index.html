@@ -21021,6 +21021,7 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     .review-pack-jira-result{grid-column:1/-1}
     .review-pack-jira-suggestions{margin-top:8px;border:1px solid #f0d999;background:#fffaf0;border-radius:5px;padding:8px 10px}
     .review-pack-jira-suggestions-heading{font-size:11px;font-weight:700;color:#8a5a00;margin-bottom:6px}
+    .review-pack-unmatched{margin:8px 0;max-height:160px;overflow:auto}.review-pack-unmatched-list{margin:0;padding-left:18px;font-size:12px}.review-pack-unmatched-list li{margin:2px 0}
     .review-pack-jira-suggestion-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 0;font-size:11px;border-top:1px solid #f4e4bb}
     .review-pack-jira-suggestion-row:first-of-type{border-top:none}
     .review-pack-jira-suggestion-label{flex:1 1 auto;min-width:180px;color:#475467}
@@ -21288,7 +21289,7 @@ const V21_ALPHA52_NETSUITE_TAGS=[
   }
   function reviewPackCrossLinks(currentPage,exportPages,swimlaneTitles){
     const candidates=(state.cells||[]).filter(cell=>REVIEW_CROSS_REF_SHAPES.has(cell.shape)&&/^-+>/.test(String(cell.label||'').trim()));
-    const linkMap={},linkIcons=[];let unresolved=0;
+    const linkMap={},linkIcons=[],unmatched=[];let unresolved=0;
     candidates.forEach(cell=>{
       const cleaned=reviewCleanCrossRefLabel(cell.label);
       if(!cleaned)return;
@@ -21305,22 +21306,22 @@ const V21_ALPHA52_NETSUITE_TAGS=[
         if(score>bestScore){bestScore=score;best=page;}
       });
       if(best&&bestScore>=0.4){linkMap[cell.id]=best.id;linkIcons.push({x:cell.x,y:cell.y,w:cell.w,h:cell.h});}
-      else unresolved++;
+      else{unresolved++;unmatched.push({cellId:cell.id,label:cleaned,pageId:currentPage.id,pageName:currentPage.name||'',bestGuess:best?reviewStripTitlePrefix(best.name):'',score:Math.round(bestScore*100)/100});}
     });
-    return{linkMap,linkIcons,unresolved,total:candidates.length};
+    return{linkMap,linkIcons,unresolved,unmatched,total:candidates.length};
   }
   async function reviewPackGenerate(){
     reviewPackReadMetadata();const pages=reviewPackPageList().filter(page=>reviewPackState.selected.has(page.id));if(!pages.length)return showToast('Select at least one page.');
     reviewPackSetProgress(true,'Reading page titles…',0);$('reviewPackGenerate').disabled=true;
     const originalPageId=state.currentPageId,entries=[],editorHistory={undo:state.undo,redo:state.redo,selected:new Set(state.selected)};
-    let unresolvedTotal=0,linkedTotal=0;
+    let unresolvedTotal=0,linkedTotal=0;const unmatchedAll=[];
     try{
       const swimlaneTitles=await reviewPackSwimlaneTitles(pages);
       for(let index=0;index<pages.length;index++){
         const page=pages[index];await v18LoadPage(page.id);await new Promise(resolve=>setTimeout(resolve,0));
         const canonicalSource=reviewPackStable({page:state.page,cells:state.cells,paintData:state.paintData,layers:state.layers,unsupported:page.unsupported||[]});
         const cross=reviewPackCrossLinks(page,pages,swimlaneTitles);
-        unresolvedTotal+=cross.unresolved;linkedTotal+=Object.keys(cross.linkMap).length;
+        unresolvedTotal+=cross.unresolved;linkedTotal+=Object.keys(cross.linkMap).length;unmatchedAll.push(...cross.unmatched);
         const renderedSvg=reviewPackSafeSvg(exportSvgMarkup({x:0,y:0,w:Number(state.page.width||DEFAULT_PAGE.width),h:Number(state.page.height||DEFAULT_PAGE.height)},{transparent:true,linkMap:cross.linkMap,linkIcons:cross.linkIcons}));
         const pageMeta=reviewPageMetaResolved(page);
         entries.push({pageId:page.id,pageName:page.name||`Page-${index+1}`,pageIndex:state.pages.indexOf(page),renderedSvg,diagramFingerprint:await reviewPackFingerprint(canonicalSource),fingerprintAlgorithm:'SHA-256',fingerprintFormat:'jandostudio-page-state-v1',processId:pageMeta.processId,area:pageMeta.area,jiraLink:pageMeta.jiraLink});
@@ -21335,14 +21336,48 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     const filename=`${reviewPackSafeFilePart(pack.packId,'PROCESS-PACK')}_${reviewPackSafeFilePart(pack.reviewRound,'R1')}.html`;const html=reviewPackStandaloneHtml(pack);const blob=new Blob([html],{type:'text/html;charset=utf-8'});const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=filename;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1800000);reviewPackSetProgress(false);
     let preview=$('reviewPackPreview');if(!preview){preview=document.createElement('a');preview.id='reviewPackPreview';preview.className='small-btn';preview.target='_blank';preview.rel='noopener';preview.textContent='Preview generated pack';$('reviewPackGenerate').before(preview);}preview.href=url;
     const linkNote=linkedTotal||unresolvedTotal?` · ${linkedTotal} cross-reference${linkedTotal===1?'':'s'} linked${unresolvedTotal?`, ${unresolvedTotal} unmatched`:''}`:'';
+    reviewPackRenderUnmatched(unmatchedAll);
     showToast(`Generated ${filename}${linkNote}`,5000);
-    return{filename,pack};
+    return{filename,pack,unmatched:unmatchedAll};
+  }
+  /* An unmatched cross-reference box used to be just a number in the toast, so authors had no way to
+     tell which box failed. List each one by page and label (with the closest page it nearly matched),
+     and let a click take the author straight to the box. */
+  function reviewPackRenderUnmatched(unmatched){
+    let host=$('reviewPackUnmatched');
+    if(!host){host=document.createElement('div');host.id='reviewPackUnmatched';host.className='review-pack-unmatched';host.setAttribute('aria-live','polite');$('reviewPackGenerate').before(host);}
+    host.replaceChildren();
+    if(!unmatched.length)return;
+    const heading=document.createElement('div');heading.className='review-pack-jira-suggestions-heading';
+    heading.textContent=`${unmatched.length} cross-reference box${unmatched.length===1?'':'es'} didn't match any page, so ${unmatched.length===1?'it stays':'they stay'} as plain text:`;
+    const list=document.createElement('ul');list.className='review-pack-unmatched-list';
+    unmatched.forEach(item=>{
+      const row=document.createElement('li');row.dataset.cellId=item.cellId;row.dataset.pageId=item.pageId;
+      const label=document.createElement('span');
+      const page=document.createElement('b');page.textContent=reviewStripTitlePrefix(item.pageName)||'(untitled page)';
+      label.append(page,document.createTextNode(` · "${item.label}"${item.bestGuess?` (closest: ${item.bestGuess}, ${Math.round(item.score*100)}%)`:''} `));
+      const jump=document.createElement('button');jump.type='button';jump.className='small-btn';jump.textContent='Jump to box';jump.dataset.jumpCell=item.cellId;
+      jump.onclick=()=>reviewPackJumpToCell(item.pageId,item.cellId).catch(error=>{console.error(error);showToast('That box could not be found.');});
+      row.append(label,jump);list.appendChild(row);
+    });
+    host.append(heading,list);
+  }
+  async function reviewPackJumpToCell(pageId,cellId){
+    $('reviewPackModal')?.classList.add('hidden');
+    if(pageId&&state.currentPageId!==pageId)await v18LoadPage(pageId);
+    const cell=(state.cells||[]).find(item=>item.id===cellId);
+    if(!cell)throw new Error('cell not found');
+    state.selected=new Set([cell.id]);
+    const width=canvasWrap.clientWidth/state.zoom,height=canvasWrap.clientHeight/state.zoom;
+    state.viewX=cell.x+cell.w/2-width/2;state.viewY=cell.y+cell.h/2-height/2;
+    updateViewBox();render();updateUi();
+    return{pageId:state.currentPageId,selected:[...state.selected]};
   }
   function reviewPackInstallButton(){
     if($('reviewPackBtn'))return;const anchor=document.querySelector('.capture-wrap');if(!anchor)return;const button=document.createElement('button');button.id='reviewPackBtn';button.className='toolbar-btn';button.type='button';button.title='Create a standalone, interactive process pack';button.textContent='Process pack';button.onclick=reviewPackOpen;anchor.before(button);
   }
   reviewPackInstallButton();
-  window.JandoStudio.reviewPack={open:reviewPackOpen,generate:reviewPackGenerate,version:'2.0'};
+  window.JandoStudio.reviewPack={open:reviewPackOpen,generate:reviewPackGenerate,crossLinks:reviewPackCrossLinks,jumpToCell:reviewPackJumpToCell,version:'2.0'};
 
   /* Everything held back during boot, run once now that there is something worth looking at. */
   jandoBooting = false;
