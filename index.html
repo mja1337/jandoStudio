@@ -21433,6 +21433,50 @@ const V21_ALPHA52_NETSUITE_TAGS=[
     updateViewBox();render();updateUi();
     return{pageId:state.currentPageId,selected:[...state.selected]};
   }
+  /* ================= Layout QA: connector self-loops and rendered-vs-declared geometry ================= */
+  /* The box-overlap/fill QA suites never looked at a connector folding back over itself, or at a shape
+     that draws bigger than its declared geometry; both were only ever found by eye. */
+  const LAYOUT_QA_BOUNDS_TOLERANCE=2;
+  const LAYOUT_QA_EXACT_SHAPES=new Set(['rect','rounded','diamond','approvalGate','milestone','ellipse','terminator']);
+  function layoutQaInsideShape(cell,point){
+    const cx=cell.x+cell.w/2,cy=cell.y+cell.h/2,rx=Math.max(1,cell.w/2),ry=Math.max(1,cell.h/2),dx=Math.abs(point.x-cx),dy=Math.abs(point.y-cy);
+    const base=V192_FLOW_SHAPES[cell.shape]?.base||cell.shape;
+    if(base==='diamond')return dx/rx+dy/ry<0.9;
+    if(base==='ellipse'||base==='onpage')return (dx*dx)/(rx*rx)+(dy*dy)/(ry*ry)<0.81;
+    return dx<rx-3&&dy<ry-3;
+  }
+  function layoutQaConnectorIssues(edge){
+    const points=dedupeRoutePoints(routePoints(edge)||[]);if(points.length<2)return[];
+    const issues=routeDirectionIssues(points).map(kind=>kind==='reversal'?'route-reversal':'route-self-intersection');
+    [getCell(edge.source),getCell(edge.target)].filter(cell=>isVertex(cell)&&cell.shape!=='swimlane').forEach(cell=>{
+      for(let index=0;index<points.length-1;index++){
+        const a=points[index],b=points[index+1];
+        for(let t=0.05;t<0.999;t+=0.05){if(layoutQaInsideShape(cell,{x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t})){issues.push(`route-crosses-${cell.id===edge.source?'source':'target'}`);return;}}
+      }
+    });
+    return[...new Set(issues)];
+  }
+  function layoutQaBoundsIssue(cell){
+    if(!isVertex(cell)||cell.rotation||['swimlane','text','group','legend'].includes(cell.shape))return null;
+    const group=diagramLayer.querySelector(`g.diagram-node[data-cell-id="${CSS.escape(cell.id)}"]`);
+    const shape=group&&[...group.children].find(node=>['polygon','rect','ellipse','path'].includes(node.tagName)&&node.getAttribute('data-cell-id')===cell.id);
+    if(!shape||typeof shape.getBBox!=='function')return null;
+    const box=shape.getBBox(),tol=LAYOUT_QA_BOUNDS_TOLERANCE;
+    const over=Math.max(cell.x-box.x,cell.y-box.y,(box.x+box.width)-(cell.x+cell.w),(box.y+box.height)-(cell.y+cell.h));
+    const under=LAYOUT_QA_EXACT_SHAPES.has(cell.shape)?Math.max(box.x-cell.x,box.y-cell.y,(cell.x+cell.w)-(box.x+box.width),(cell.y+cell.h)-(box.y+box.height)):0;
+    if(over<=tol&&under<=tol)return null;
+    return{declared:{x:cell.x,y:cell.y,w:cell.w,h:cell.h},rendered:{x:Math.round(box.x*10)/10,y:Math.round(box.y*10)/10,w:Math.round(box.width*10)/10,h:Math.round(box.height*10)/10},delta:Math.round(Math.max(over,under)*10)/10};
+  }
+  function layoutQaRun(){
+    const issues=[];
+    (state.cells||[]).forEach(cell=>{
+      if(isEdge(cell)){layoutQaConnectorIssues(cell).forEach(kind=>issues.push({kind,cellId:cell.id,label:cell.label||'',source:cell.source,target:cell.target}));}
+      else{const bounds=layoutQaBoundsIssue(cell);if(bounds)issues.push({kind:'rendered-bounds-mismatch',cellId:cell.id,label:cell.label||'',...bounds});}
+    });
+    return{page:state.currentPageId||null,checked:(state.cells||[]).length,issueCount:issues.length,issues};
+  }
+  window.JandoStudio.layoutQa={run:layoutQaRun,connector:id=>layoutQaConnectorIssues(getCell(id)),bounds:id=>layoutQaBoundsIssue(getCell(id)),tolerance:LAYOUT_QA_BOUNDS_TOLERANCE};
+
   function reviewPackInstallButton(){
     if($('reviewPackBtn'))return;const anchor=document.querySelector('.capture-wrap');if(!anchor)return;const button=document.createElement('button');button.id='reviewPackBtn';button.className='toolbar-btn';button.type='button';button.title='Create a standalone, interactive process pack';button.textContent='Process pack';button.onclick=reviewPackOpen;anchor.before(button);
   }
