@@ -6744,7 +6744,9 @@
       rect = { x: draft.start.x - w / 2, y: draft.start.y - h / 2, w, h };
     }
     rect.x = snapValue(rect.x); rect.y = snapValue(rect.y);
-    rect.w = Math.max(30, snapValue(rect.w)); rect.h = Math.max(24, snapValue(rect.h));
+    /* A click-placed shape keeps its declared default size exactly; only a dragged, custom size snaps.
+       Snapping the default (e.g. 112x92 -> 110x90) made the drawn shape differ from the declared one. */
+    if (!small) { rect.w = Math.max(30, snapValue(rect.w)); rect.h = Math.max(24, snapValue(rect.h)); }
     pushSnapshot();
     const cell = tool === 'swimlane'
       ? createSwimlane(rect.x, rect.y, Math.max(260, rect.w), Math.max(150, rect.h))
@@ -13507,7 +13509,10 @@
     const tool=draft.tool==='swimlane'||SHAPE_DEFS[draft.tool]?draft.tool:(SHAPE_DEFS[state.activeCreationTool]?state.activeCreationTool:'rect');
     let rect=normalizedRect(draft.start,draft.current),small=rect.w<8&&rect.h<8;
     if(small){const size=tool==='swimlane'?[720,360]:(SHAPE_DEFS[tool]?.size||[160,80]);rect={x:draft.start.x,y:draft.start.y,w:size[0],h:size[1]};}
-    rect.x=snapValue(rect.x);rect.y=snapValue(rect.y);rect.w=Math.max(30,snapValue(rect.w));rect.h=Math.max(24,snapValue(rect.h));
+    /* Canonical decision diamond is 150x100 (SHAPE_DEFS.diamond); approval/milestone diamonds are 112x92.
+       Click-placed shapes keep that declared size so rendered, routed and exported bounds all agree;
+       only a dragged custom size is snapped to the grid. Position always snaps. */
+    rect.x=snapValue(rect.x);rect.y=snapValue(rect.y);if(!small){rect.w=Math.max(30,snapValue(rect.w));rect.h=Math.max(24,snapValue(rect.h));}
     return{tool,rect};
   }
   function v2Alpha29RectOverlap(a,b){const w=Math.max(0,Math.min(a.x+a.w,b.x+b.w)-Math.max(a.x,b.x)),h=Math.max(0,Math.min(a.y+a.h,b.y+b.h)-Math.max(a.y,b.y));return w*h;}
