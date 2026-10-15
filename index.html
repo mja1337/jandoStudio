@@ -21502,8 +21502,12 @@ const V21_ALPHA52_NETSUITE_TAGS=[
   const routeJogBaseRoutePoints=routePoints;
   routePoints=function(edge,overrides={}){
     const points=routeJogBaseRoutePoints(edge,overrides);
-    if(!edge||edge.route==='straight'||!Array.isArray(points)||points.length<4)return points;
-    return routeAbsorbEndJogs(points);
+    if(!edge||edge.route==='straight'||!Array.isArray(points)||points.length<3)return points;
+    /* Two shapes closer together than both jetties (e.g. a 30px gap with 20px jetties) made the
+       imported OrthConnector overshoot and come back along the same line: 660->680->668->688.
+       Collinear back-and-forth points are dropped; a computed route has nothing to keep there. */
+    const collapsed=!(edge.waypoints||[]).length&&routeDirectionIssues(points).length?simplifyOrthogonalPoints(points):points;
+    return collapsed.length<4?collapsed:routeAbsorbEndJogs(collapsed);
   };
 
   /* ================= Layout QA: connector self-loops and rendered-vs-declared geometry ================= */
@@ -21521,7 +21525,9 @@ const V21_ALPHA52_NETSUITE_TAGS=[
   function layoutQaConnectorIssues(edge){
     const points=dedupeRoutePoints(routePoints(edge)||[]);if(points.length<2)return[];
     const raw=dedupeRoutePoints(routeJogBaseRoutePoints(edge)||[]);
-    const issues=[...new Set([...routeDirectionIssues(points),...routeDirectionIssues(raw)])].map(kind=>kind==='reversal'?'route-reversal':'route-self-intersection');
+    /* Raw-route reversals only count when the file pinned bend points (a file problem); for a
+       computed route only what is actually drawn matters. */
+    const issues=[...new Set([...routeDirectionIssues(points),...((edge.waypoints||[]).length?routeDirectionIssues(raw):[])])].map(kind=>kind==='reversal'?'route-reversal':'route-self-intersection');
     const jog=(a,b,c)=>{if(!c)return false;const len=Math.hypot(b.x-a.x,b.y-a.y);const turn=Math.abs((b.x-a.x)*(c.y-b.y)-(b.y-a.y)*(c.x-b.x))>0.01;return len>0.5&&len<=ROUTE_JOG_TOLERANCE&&turn;};
     /* Checked on the route before routeAbsorbEndJogs straightens it, so the underlying file problem
        (a waypoint a few px off the port) is still reported. */
